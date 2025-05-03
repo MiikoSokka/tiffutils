@@ -1,0 +1,14 @@
+README.md
+pyproject.toml
+setup.cfg
+setup.py
+tiffutils/__init__.py
+tiffutils/io.py
+tiffutils/mip.py
+tiffutils/normalize.py
+tiffutils/reshape.py
+tiffutils/utils.py
+tiffutils.egg-info/PKG-INFO
+tiffutils.egg-info/SOURCES.txt
+tiffutils.egg-info/dependency_links.txt
+tiffutils.egg-info/top_level.txt
