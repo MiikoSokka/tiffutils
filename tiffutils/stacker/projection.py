@@ -3,6 +3,8 @@
 
 import numpy as np
 
+import numpy as np
+
 def mip(array):
     """
     Generate a Maximum Intensity Projection (MIP) over the z-axis for each channel in the input array.
@@ -18,24 +20,23 @@ def mip(array):
         - From 3D input: shape (Y, X)
         - From 4D input: shape (C, Y, X)
         - From 5D input: shape (T, C, Y, X)
-    
-    Raises:
-    - ValueError: If the input array does not have 3, 4, or 5 dimensions.
+        - On error: returns the original input array and prints the error.
     """
-    if array.ndim == 3:
-        # (Z, Y, X) → MIP over Z
-        return np.max(array, axis=0)
-    elif array.ndim == 4:
-        # (Z, C, Y, X) → MIP over Z
-        return np.max(array, axis=0)
-    elif array.ndim == 5:
-        # (T, Z, C, Y, X) → MIP over Z
-        return np.max(array, axis=1)
-    else:
-        raise ValueError("Input array must be 3D, 4D, or 5D.")
-    
-import numpy as np
+    try:
+        if array.ndim == 3:
+            return np.max(array, axis=0)
+        elif array.ndim == 4:
+            return np.max(array, axis=0)
+        elif array.ndim == 5:
+            return np.max(array, axis=1)
+        else:
+            raise ValueError("Input array must be 3D, 4D, or 5D.")
+    except Exception as e:
+        print(f"[MIP ERROR] {e}")
+        return array
 
+
+import numpy as np
 
 def aip(array):
     """
@@ -52,21 +53,20 @@ def aip(array):
         - From 3D input: shape (Y, X)
         - From 4D input: shape (C, Y, X)
         - From 5D input: shape (T, C, Y, X)
-    
-    Raises:
-    - ValueError: If the input array does not have 3, 4, or 5 dimensions.
+        - On error: returns the original input array and prints the error.
     """
-    if array.ndim == 3:
-        # (Z, Y, X) → AIP over Z
-        return np.mean(array, axis=0)
-    elif array.ndim == 4:
-        # (Z, C, Y, X) → AIP over Z
-        return np.mean(array, axis=0)
-    elif array.ndim == 5:
-        # (T, Z, C, Y, X) → AIP over Z
-        return np.mean(array, axis=1)
-    else:
-        raise ValueError("Input array must be 3D, 4D, or 5D.")
+    try:
+        if array.ndim == 3:
+            return np.mean(array, axis=0)
+        elif array.ndim == 4:
+            return np.mean(array, axis=0)
+        elif array.ndim == 5:
+            return np.mean(array, axis=1)
+        else:
+            raise ValueError("Input array must be 3D, 4D, or 5D.")
+    except Exception as e:
+        print(f"[AIP ERROR] {e}")
+        return array
 
 
 def reshape_timepoints_to_channels(array_5D):
