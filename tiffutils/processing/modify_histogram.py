@@ -3,7 +3,7 @@
 
 import numpy as np
 
-def histogram_stretch(input_array, intensity_scaling_param=[1, 99]):
+def histogram_stretch(input_array, intensity_scaling_param=[1, 99], verbose=False):
     """
     Apply histogram stretching using percentile clipping to a 2D, 3D, 4D, or 5D NumPy array.
 
@@ -37,11 +37,13 @@ def histogram_stretch(input_array, intensity_scaling_param=[1, 99]):
     arr_dtype = input_array.dtype
 
     if input_array.ndim == 2:
-        print(f'Histogram stretching a 2D array of shape {input_array.shape}')
+        print(f'\tHistogram stretching a 2D array of shape {input_array.shape}')
         # 2D: Y, X
         p1 = np.percentile(input_array, p_lower)
         p99 = np.percentile(input_array, p_upper)
-        print(f"\t2D p1={p1}, p99={p99}")
+    
+        if verbose:
+            print(f"\tp1={p1}, p99={p99}")
 
         if p99 - p1 < 1e-5:
             print("\tWarning: Percentile range too small. Skipping normalization.")
@@ -56,7 +58,9 @@ def histogram_stretch(input_array, intensity_scaling_param=[1, 99]):
         # 3D: Z, Y, X
         p1 = np.percentile(input_array, p_lower)
         p99 = np.percentile(input_array, p_upper)
-        print(f"\t3D p1={p1}, p99={p99}")
+
+        if verbose:
+            print(f"\tp1={p1}, p99={p99}")
 
         if p99 - p1 < 1e-5:
             print("\tWarning: Percentile range too small. Skipping normalization.")
@@ -76,7 +80,9 @@ def histogram_stretch(input_array, intensity_scaling_param=[1, 99]):
             channel = input_array[:, c, :, :]
             p1 = np.percentile(channel, p_lower)
             p99 = np.percentile(channel, p_upper)
-            print(f"\tChannel {c}: p1={p1}, p99={p99}")
+
+            if verbose:
+                print(f"\tChannel {c}: p1={p1}, p99={p99}")
 
             if p99 - p1 < 1e-5:
                 print(f"\tWarning: Channel {c} percentile range too small. Skipping normalization.")
@@ -101,7 +107,9 @@ def histogram_stretch(input_array, intensity_scaling_param=[1, 99]):
                 subarray = input_array[t, :, c, :, :]
                 p1 = np.percentile(subarray, p_lower)
                 p99 = np.percentile(subarray, p_upper)
-                print(f"\tTime {t}, Channel {c}: p1={p1}, p99={p99}")
+
+                if verbose:
+                    print(f"\tTime {t}, Channel {c}: p1={p1}, p99={p99}")
 
                 if p99 - p1 < 1e-5:
                     print(f"\tWarning: T{t} C{c} percentile range too small. Skipping normalization.")
@@ -116,5 +124,5 @@ def histogram_stretch(input_array, intensity_scaling_param=[1, 99]):
         return stretched
 
     else:
-        print(f"Unsupported array with shape {input_array.shape}. Skipping.")
+        print(f"\tUnsupported array with shape {input_array.shape}. Skipping.")
         return input_array.copy()

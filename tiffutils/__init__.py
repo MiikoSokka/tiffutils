@@ -1,6 +1,7 @@
 from . import io
 from . import processing
 from . import stacker
+from . import segmentation
 
 from .io.filefinder import get_filenames
 from .io.saver import save_tiff
@@ -15,16 +16,15 @@ from .stacker.stack_conversions import (
     zcyx_to_tzcyx_single_folder,
     tzcyx_to_zcyx_single_folder
 )
-
 from .stacker.projection import (
     mip,
     aip,
     reshape_timepoints_to_channels,
     reshape_channels_to_timepoints
 )
-
 from .stacker.montage import create_montage, save_all_montages
 
+from .segmentation import apply_edges
 __all__ = [
     "get_filenames",
     "save_tiff",
@@ -40,5 +40,6 @@ __all__ = [
     "reshape_timepoints_to_channels",
     "reshape_channels_to_timepoints",
     "io", "processing", "stacker",
-    "montage", "create_montage", "save_all_montages"
+    "montage", "create_montage", "save_all_montages",
+    "apply_edges"
 ]

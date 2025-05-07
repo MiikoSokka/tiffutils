@@ -3,8 +3,6 @@
 
 import numpy as np
 
-import numpy as np
-
 def mip(array):
     """
     Generate a Maximum Intensity Projection (MIP) over the z-axis for each channel in the input array.
@@ -35,8 +33,6 @@ def mip(array):
         print(f"[MIP ERROR] {e}")
         return array
 
-
-import numpy as np
 
 def aip(array):
     """
