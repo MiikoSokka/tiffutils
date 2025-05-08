@@ -1,5 +1,6 @@
-from .edges import (apply_edges)
+from .edges import apply_edges, montage_segmentation_edges
 
 __all__ = [
-    "apply_edges"
+    "apply_edges",
+    "montage_segmentation_edges"
 ]

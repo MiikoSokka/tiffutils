@@ -24,7 +24,7 @@ from .stacker.projection import (
 )
 from .stacker.montage import create_montage, save_all_montages
 
-from .segmentation import apply_edges
+from .segmentation import apply_edges, montage_segmentation_edges
 __all__ = [
     "get_filenames",
     "save_tiff",
@@ -41,5 +41,5 @@ __all__ = [
     "reshape_channels_to_timepoints",
     "io", "processing", "stacker",
     "montage", "create_montage", "save_all_montages",
-    "apply_edges"
+    "apply_edges", "montage_segmentation_edges"
 ]
