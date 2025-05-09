@@ -4,6 +4,7 @@ from . import stacker
 from . import segmentation
 
 from .io.filefinder import get_filenames
+from .io.filefinder import match_filenames
 from .io.saver import save_tiff
 from .io.loader import load_tiff
 
@@ -25,8 +26,9 @@ from .stacker.projection import (
 from .stacker.montage import create_montage, save_all_montages
 
 from .segmentation import apply_edges, montage_segmentation_edges
+
 __all__ = [
-    "get_filenames",
+    "get_filenames", "match_filenames",
     "save_tiff",
     "load_tiff",
     "convert_dtype",
