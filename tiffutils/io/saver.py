@@ -5,27 +5,25 @@ import os
 import numpy as np
 import tifffile as tiff
 
-def save_tiff(stack, filename, output_folder):
+def save_tiff(array, save_path):
     """
-    Save a TIFF image stack to disk with optional datatype conversion.
+    Save a TIFF image array to disk with optional datatype conversion.
 
     Parameters:
-    - stack (np.ndarray): The image stack to be saved.
+    - array (np.ndarray): The image array to be saved.
     - filename (str): The name of the output TIFF file.
     - output_folder (str): Path to the directory where the TIFF will be saved.
     - datatype (np.dtype or str, optional): Desired datatype for saving. 
-      If None, the original datatype of the input stack is used.
+      If None, the original datatype of the input array is used.
 
     The function creates the output folder if it does not exist,
-    optionally converts the data type, and saves the stack as a TIFF file using the ImageJ format.
+    optionally converts the data type, and saves the array as a TIFF file using the ImageJ format.
     """
 
     # Create the output folder if it doesn't exist
-    os.makedirs(output_folder, exist_ok=True)
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
-    save_path = os.path.join(output_folder, filename)
-
-    tiff.imwrite(save_path, stack, imagej=True)
-    print(f"{filename} saved.")
-    print(f"\tShape = {stack.shape}")
-    print(f"\tDatatype = {stack.dtype}")
+    tiff.imwrite(save_path, array, imagej=True)
+    print(f"{os.path.basename(save_path)} saved.")
+    print(f"\tShape = {array.shape}")
+    print(f"\tDatatype = {array.dtype}")

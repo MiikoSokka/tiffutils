@@ -8,49 +8,6 @@ from natsort import natsorted
 from ..io.filefinder import get_filenames
 from ..io.loader import load_tiff
 
-def zcyx_to_tzcyx_subfolders(folder_path, pattern=r'.*\.tiff?$'):
-    """
-    Load TIFF files from subfolders and stack them into a TZCYX NumPy array.
-
-    Assumes that each subfolder contains ZCYX TIFF files representing Z slices for a timepoint.
-    Matching filenames are naturally sorted within each subfolder.
-
-    Parameters:
-    - folder_path (str): Path to the main folder containing subfolders.
-    - pattern (str): Regex pattern to match TIFF files (default: all .tiff/.tif files).
-
-    Returns:
-    - tzcyx (np.ndarray): A NumPy array of shape (T, Z, C, Y, X).
-    """
-    # subfolders = natsorted([os.path.join(folder_path, d) for d in os.listdir(folder_path)
-    #                         if os.path.isdir(os.path.join(folder_path, d))])
-    # time_series = []
-    # for subfolder in subfolders:
-    #     filenames = natsorted(get_filenames(subfolder, regex=pattern, subfolders=False))
-    #     z_stack = [tifffile.imread(f) for f in filenames]
-    #     zcyx = np.stack(z_stack, axis=0)  # shape: Z, C, Y, X
-    #     time_series.append(zcyx)
-    # tzcyx = np.stack(time_series, axis=0)  # shape: T, Z, C, Y, X
-    # return tzcyx
-
-
-def tzcyx_to_zcyx_subfolders(tzcyx_array, folder_path, pattern=r'.*\.tiff?$'):
-    """
-    Split a TZCYX array into ZCYX arrays corresponding to each subfolder (timepoint).
-
-    Parameters:
-    - tzcyx_array (np.ndarray): Input array of shape (T, Z, C, Y, X).
-    - folder_path (str): Path to the main folder containing subfolders.
-    - pattern (str): Regex pattern to match filenames in subfolders.
-
-    Returns:
-    - list of np.ndarray: List of arrays, one per subfolder, each with shape (Z, C, Y, X).
-    """
-    # subfolders = natsorted([os.path.join(folder_path, d) for d in os.listdir(folder_path)
-    #                         if os.path.isdir(os.path.join(folder_path, d))])
-    # assert len(tzcyx_array) == len(subfolders), "T dimension must match number of subfolders."
-    # return [tzcyx_array[t] for t in range(tzcyx_array.shape[0])]
-
 
 def zcyx_to_tzcyx_single_folder(filenamelist, input_path, channelnumber=4):
     """
@@ -71,18 +28,41 @@ def zcyx_to_tzcyx_single_folder(filenamelist, input_path, channelnumber=4):
     return tzcyx
 
 
-def tzcyx_to_zcyx_single_folder(tzcyx_array, folder_path, pattern=r'.*\.tiff?$'):
+def get_YZ_and_ZX_views(array: np.ndarray, XY_pixel_in_nm: float, Z_pixel_in_nm: float):
     """
-    Split a TZCYX array into ZCYX arrays for a single folder.
+    Get orthogonal views of a ZCYX (or ZYX) array.
+
+    Reslice a 4D array (Z, C, Y, X) or 3D array (Z, Y, X) into scaled isotropic views,
+    and return the scaled arrays.
 
     Parameters:
-    - tzcyx_array (np.ndarray): Input array of shape (T, Z, C, Y, X).
-    - folder_path (str): Path to the folder containing original TIFF files.
-    - pattern (str): Regex pattern to match filenames.
+    - array (np.ndarray): Input array of shape (Z, C, Y, X) or (Z, Y, X)
+    - XY_pixel_in_nm (float): Pixel size in XY dimensions (in nm)
+    - Z_pixel_in_nm (float): Pixel size in Z dimension (in nm)
 
     Returns:
-    - list of np.ndarray: List of arrays, one per timepoint, each with shape (Z, C, Y, X).
+    - array_x_scaled (np.ndarray): Scaled resliced array in (X, C, Y, Z) or (X, Y, Z)
+    - array_y_scaled (np.ndarray): Scaled resliced array in (Y, C, Z, X) or (Y, Z, X)
     """
-    # filenames = natsorted(get_filenames(folder_path, regex=pattern, subfolders=False))
-    # assert len(tzcyx_array) == len(filenames), "T dimension must match number of files."
-    # return [tzcyx_array[t] for t in range(tzcyx_array.shape[0])]
+    assert array.ndim in (3, 4), "Array must be 3D (Z, Y, X) or 4D (Z, C, Y, X)"
+    scalefactor = Z_pixel_in_nm / XY_pixel_in_nm
+    repeat_count = int(round(scalefactor))
+
+    if array.ndim == 4:
+        # ZCYX → XCYZ
+        array_x = array.transpose(3, 1, 2, 0)
+        array_x_scaled = np.repeat(array_x, repeats=repeat_count, axis=3)
+
+        # ZCYX → YCZX
+        array_y = array.transpose(2, 1, 0, 3)
+        array_y_scaled = np.repeat(array_y, repeats=repeat_count, axis=2)
+    else:
+        # ZYX → XYZ
+        array_x = array.transpose(2, 1, 0)
+        array_x_scaled = np.repeat(array_x, repeats=repeat_count, axis=2)
+
+        # ZYX → YZX
+        array_y = array.transpose(1, 0, 2)
+        array_y_scaled = np.repeat(array_y, repeats=repeat_count, axis=1)
+
+    return array_y_scaled, array_x_scaled

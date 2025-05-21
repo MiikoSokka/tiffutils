@@ -3,7 +3,7 @@
 
 import numpy as np
 
-def histogram_stretch(input_array, intensity_scaling_param=[1, 99], verbose=False):
+def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=False):
     """
     Apply histogram stretching using percentile clipping to a 2D, 3D, 4D, or 5D NumPy array.
 
@@ -12,7 +12,7 @@ def histogram_stretch(input_array, intensity_scaling_param=[1, 99], verbose=Fals
     input_array : np.ndarray
         A 2D (Y, X), 3D (Z, Y, X), 4D (Z, C, Y, X), or 5D (T, Z, C, Y, X) NumPy array.
     intensity_scaling_param : list or tuple of two floats
-        The lower and upper percentiles used for contrast stretching, e.g., [1, 99].
+        The lower and upper percentiles used for contrast stretching, e.g., [0, 100].
 
     Returns:
     --------

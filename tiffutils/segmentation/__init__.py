@@ -1,6 +1,6 @@
-from .edges import apply_edges, montage_segmentation_edges
+from .edges import apply_edges, overlay_arrays
 
 __all__ = [
     "apply_edges",
-    "montage_segmentation_edges"
+    "overlay_arrays"
 ]
