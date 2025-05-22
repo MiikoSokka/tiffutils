@@ -52,41 +52,24 @@ def apply_edges(array: np.ndarray) -> np.ndarray:
 import numpy as np
 from tiffutils.processing.dtype import convert_dtype
 
-
 def overlay_arrays(array1: np.ndarray, array2: np.ndarray, alpha: float = 0.5) -> np.ndarray:
     """
-    Overlay array2 on top of array1 with a given transparency.
-
-    Parameters:
-    -----------
-    array1 : np.ndarray
-        The base array. Must be of shape (C, Y, X) or (Z, C, Y, X).
-    array2 : np.ndarray
-        The overlay array. Must be the same shape as array1. Will be converted to array1's dtype.
-    alpha : float
-        Transparency level for array2. Must be between 0 (fully transparent) and 1 (fully opaque).
-
-    Returns:
-    --------
-    np.ndarray
-        The resulting overlay array with the same shape and dtype as array1.
-
-    Raises:
-    -------
-    AssertionError
-        If array1 and array2 shapes are not equal.
+    Overlay array2 on top of array1 with transparency alpha. Assumes array2 is a binary mask (0 or 255),
+    and array1 is in a higher intensity range.
     """
-    assert array1.shape == array2.shape, "Input arrays must have the same shape."
-    assert 0 <= alpha <= 1, "Alpha must be between 0 and 1."
+    assert array1.shape == array2.shape
+    assert 0 <= alpha <= 1
 
-    array2_converted = convert_dtype(array2, str(array1.dtype))
+    # Convert to float32
+    arr1 = array1.astype(np.float32)
+    arr2 = (array2 > 0).astype(np.float32)  # binary mask (0 or 1)
 
-    # Blend using float32 to avoid intermediate precision issues
-    result = (1 - alpha) * array1.astype(np.float32) + alpha * array2_converted.astype(np.float32)
+    # Normalize array1 to 0–1 for visualization
+    arr1_norm = (arr1 - arr1.min()) / (arr1.max() - arr1.min() + 1e-8)
 
-    # Clip and cast back to original dtype if it's integer
-    if np.issubdtype(array1.dtype, np.integer):
-        info = np.iinfo(array1.dtype)
-        result = np.clip(result, info.min, info.max)
+    # Create overlay: add brightness only where array2 > 0
+    overlay = arr1_norm * (1 - alpha) + arr2 * alpha
 
-    return result.astype(array1.dtype)
+    # Rescale to original dtype
+    overlay_scaled = (overlay * 255).astype(np.uint8)
+    return overlay_scaled
