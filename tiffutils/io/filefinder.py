@@ -12,7 +12,8 @@ def get_filenames(input_path, regex=r'.*\.tiff?$', subfolders=False):
     Parameters:
     - input_path (str): Path to the main directory.
     - regex (str): Regular expression to match filenames. Default is '.*\\.tiff?$'.
-    - subfolders (bool): If False, search only in the main folder. If True, require subdirectories and validate single matching file across them.
+    - subfolders (bool) = False (default): Search only in the main folder. If True, require subdirectories and validate single matching file across them.
+    - subfolders (bool) = True: Require subdirectories and validate single matching file across them. Return file list and directory list
 
     Returns:
     - list[str]: A naturally sorted list of filenames found (only file names, not full paths).
@@ -29,7 +30,7 @@ def get_filenames(input_path, regex=r'.*\.tiff?$', subfolders=False):
         filenamelist = [
             file for file in os.listdir(input_path)
             if os.path.isfile(os.path.join(input_path, file)) and
-               re.match(regex, file) and
+               re.search(regex, file) and
                not file.startswith('._')
         ]
         return natsorted(filenamelist)
@@ -46,11 +47,15 @@ def get_filenames(input_path, regex=r'.*\.tiff?$', subfolders=False):
     all_files = [
         f for f in os.listdir(dirs_paths[0])
         if os.path.isfile(os.path.join(dirs_paths[0], f)) and
-           re.match(regex, f) and
+           re.search(regex, f) and
            not f.startswith('._')
     ]
+
+    dirs_paths_bases = [os.path.basename(path) for path in dirs_paths]
     print(f'All files:\n{all_files}')
-    return natsorted(all_files)
+    print(f'All directory paths: {dirs_paths_bases}')
+    
+    return natsorted(all_files), natsorted(dirs_paths_bases)
 
 def match_filenames(list1, list2, trim1=None, trim2=None):
     """

@@ -8,7 +8,7 @@ Will save one or more montages (100 cells per montage) for each channel.
 Example usage:
 
     filenamelist = tiffu.get_filenames(input_path, regex=regex_var, subfolders=False)
-    arrays = [tiffu.load_tiff(os.path.join(input_path, f), 4) for f in filenamelist]
+    arrays = [tiffu.load_tiff(os.path.join(input_path, f), expected_channels=4) for f in filenamelist]
     processed_arrays = [
         tiffu.mip(
             tiffu.histogram_stretch(
@@ -16,7 +16,7 @@ Example usage:
             )
         ) for a in arrays
     ]
-    tiffu.create_QC_montages(processed_arrays, filenamelist, output_path)
+    tiffu.create_QC_montage(processed_arrays, filenamelist, output_path)
     
 """
 import os

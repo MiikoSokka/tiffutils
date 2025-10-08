@@ -1,6 +1,7 @@
 from .stack_conversions import (
     zcyx_to_tzcyx_single_folder,
-    get_YZ_and_ZX_views
+    get_YZ_and_ZX_views,
+    reorder_channels
 )
 from .projection import reshape_timepoints_to_channels, reshape_channels_to_timepoints, mip, aip
 

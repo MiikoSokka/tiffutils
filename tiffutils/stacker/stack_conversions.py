@@ -66,3 +66,21 @@ def get_YZ_and_ZX_views(array: np.ndarray, XY_pixel_in_nm: float, Z_pixel_in_nm:
         array_y_scaled = np.repeat(array_y, repeats=repeat_count, axis=1)
 
     return array_y_scaled, array_x_scaled
+
+
+def reorder_channels(hyperstack, order_list):
+    """
+    Reorders the channels based on a list of new positions.
+
+    Note that the numbers in the list are the original 0-based positions and the position of a number will be the new reordered position.
+
+    When making the list, it is easiest to make two columns, original_order and new_order, in an excel sheet. Number the new_order column based on the new order 
+    and then sort the two columns by new_order. Copy the values from original_order column, then transpose and copy the transposed values. Then do echo '<transposed original_order>'|sed 's/\t/,/g'|pbcopy.
+    Finally, paste the values into python order_list.
+    """
+
+    # Validate that order_list is the same length as the channel dimension
+    if len(order_list) != hyperstack.shape[1]:
+        raise ValueError(f"order_list length ({len(order_list)}) must match number of channels ({hyperstack.shape[1]})")
+    
+    return hyperstack[:, order_list, :, :]
