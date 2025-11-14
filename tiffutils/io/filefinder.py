@@ -89,3 +89,19 @@ def match_filenames(list1, list2, trim1=None, trim2=None):
         return natsorted(matched1)  # Return a single list if they are the same
     else:
         return natsorted(matched1), natsorted(matched2)  # Return both lists if they differ
+
+
+import subprocess
+
+def get_project_root():
+    try:
+        # Try to get git top-level directory
+        root = subprocess.check_output(
+            ["git", "rev-parse", "--show-toplevel"],
+            stderr=subprocess.DEVNULL,
+            text=True
+        ).strip()
+    except subprocess.CalledProcessError:
+        # Fallback to current working directory
+        root = os.getcwd()
+    return root
