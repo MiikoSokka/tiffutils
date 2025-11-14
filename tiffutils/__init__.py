@@ -15,6 +15,7 @@ from .processing.registration import (
     register_arrays,
     register_stacks_from_paths
     )
+from .processing.registration_blob import register_and_save_batch
 
 from .stacker.stack_conversions import (
     zcyx_to_tzcyx_single_folder,
@@ -43,6 +44,7 @@ __all__ = [
     "histogram_stretch",
     "register_arrays",
     "register_stacks_from_paths",
+    "register_and_save_batch",
     "zcyx_to_tzcyx_single_folder",
     "get_YZ_and_ZX_views",
     "reorder_channels",
