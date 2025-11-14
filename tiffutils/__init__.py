@@ -5,6 +5,7 @@ from . import segmentation
 
 from .io.filefinder import get_filenames
 from .io.filefinder import match_filenames
+from .io.filefinder import get_project_root
 from .io.saver import save_tiff
 from .io.loader import load_tiff
 
@@ -35,7 +36,7 @@ from .segmentation.edges import apply_edges, overlay_arrays
 from .segmentation.segment_features import segmentMetaphaseChromosomes
 
 __all__ = [
-    "get_filenames", "match_filenames",
+    "get_filenames", "match_filenames", "get_project_root",
     "save_tiff",
     "load_tiff",
     "convert_dtype",
