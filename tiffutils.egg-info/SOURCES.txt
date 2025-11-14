@@ -17,5 +17,6 @@ tiffutils/processing/modify_histogram.py
 tiffutils/registration/__init__.py
 tiffutils/segmentation/__init__.py
 tiffutils/stacker/__init__.py
+tiffutils/stacker/montage.py
 tiffutils/stacker/projection.py
 tiffutils/stacker/stack_conversions.py

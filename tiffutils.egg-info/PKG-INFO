@@ -12,6 +12,8 @@ Description-Content-Type: text/markdown
 
 Microscopy TIFF utilities for loading, saving, reshaping, normalizing, and visualizing TIFF files.
 
+Assumes the tiff file is a stack with the shape of T,Z,C,Y,X (not all dimensions are required).
+
 
 ---
 

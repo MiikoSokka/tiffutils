@@ -10,19 +10,22 @@ from .io.loader import load_tiff
 
 from .processing.dtype import convert_dtype  # adjust based on actual file names
 from .processing.modify_histogram import histogram_stretch
-from .processing.registration import register_arrays
+from .processing.registration import (
+    register_arrays,
+    register_stacks_from_paths
+    )
 
 from .stacker.stack_conversions import (
     zcyx_to_tzcyx_single_folder,
     get_YZ_and_ZX_views,
     reorder_channels
-)
+    )
 from .stacker.projection import (
     mip,
     aip,
     reshape_timepoints_to_channels,
     reshape_channels_to_timepoints
-)
+    )
 from .stacker.montage_QC import create_QC_montage
 
 from .stacker.montage import create_3D_montage
@@ -38,6 +41,7 @@ __all__ = [
     "convert_dtype",
     "histogram_stretch",
     "register_arrays",
+    "register_stacks_from_paths",
     "zcyx_to_tzcyx_single_folder",
     "get_YZ_and_ZX_views",
     "reorder_channels",
