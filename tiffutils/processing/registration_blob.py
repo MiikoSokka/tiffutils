@@ -62,31 +62,76 @@ def detect_features_3d(image, min_sigma=1, max_sigma=3, threshold=0.1):
     return np.array(features_3d), mip
 
 def match_features(moving_features, fixed_features, max_distance=500):
-    """Enhanced feature matching with separate XY and Z thresholds"""
+    """Enhanced feature matching with separate XY and Z thresholds
+    
+    Args:
+    1) moving_features and
+    2) fixed features:
+        - numpy.ndarray of shape (N, 3)
+        - A list of N feature points from the image.
+        - Each row is a (z, y, x) coordinate.
+    3) max_distance (float, default=500)
+        - The maximum allowed XY distance for a valid match.
+        - The maximum allowed Z distance is max_distance * 0.02
+    
+    Returns:
+    1) matched_moving and
+    2) matched_fixed
+        - numpy.ndarray of shape (K, 3)
+        - The subset of moving features that found valid matches.
+        - Format: (z, y, x).
+    3) confidence (float)
+        - A matching quality score between 0.0 and 1.0.
+    """
+
+    # If either input feature set is empty, return empty arrays and zero confidence
     if len(moving_features) == 0 or len(fixed_features) == 0:
         return np.array([]), np.array([]), 0.0
     
     # Calculate separate distances for XY and Z
+        # - uses Euclidean distance to compute pairwise distances between all moving and fixed features.
+        # - xy_distances: Computes distances only in the XY plane ([:, 1:] extracts only Y and X).
+        # - z_distances: Computes distances only in Z ([:, 0:1] extracts only the Z coordinate).
     xy_distances = cdist(moving_features[:, 1:], fixed_features[:, 1:])
     z_distances = cdist(moving_features[:, 0:1], fixed_features[:, 0:1])
-    
+
+    # Set maximum distance thresholds
     max_xy_distance = max_distance
     max_z_distance = max_distance * 0.02  # More strict in Z
     
-    # Find matches that satisfy both conditions
+    # Apply distance thresholds to find matches that satisfy both conditions
+        # A valid match satisfies both conditions:
+        # - At least one fixed feature is within max_xy_distance in XY.
+        # - At least one fixed feature is within max_z_distance in Z.
+        # Any(axis=1): Ensures each moving feature has at least one corresponding fixed feature within the defined thresholds.
     valid_matches = (xy_distances < max_xy_distance).any(axis=1) & (z_distances < max_z_distance).any(axis=1)
-    
+
+    # Handle cases where no matches are found
+    # - If no valid matches exist, return empty arrays and confidence 0.0
     if not np.any(valid_matches):
         return np.array([]), np.array([]), 0.0
     
-    # Get best matches considering both XY and Z
+    # Find best matches considering both XY and Z
+        # Computes a weighted combined distance:
+        # - Z-distances are doubled (z_distances*2) to give higher importance to Z-alignment.
+        # - np.argmin(...) selects the best matching fixed feature for each moving feature.
     combined_distances = np.sqrt(xy_distances**2 + (z_distances*2)**2)  # Weight Z more
     matches = np.argmin(combined_distances, axis=1)
-    
+
+    # Extract matched feature pairs
+        # - Extracts the subset of matched moving features.
+        # - Extracts the corresponding fixed features that are their best matches
     matched_moving = moving_features[valid_matches]
     matched_fixed = fixed_features[matches[valid_matches]]
     
-    # Calculate confidence based on XY and Z match quality separately
+    # Compute confidence score based on XY and Z match quality separately
+        # XY Confidence:
+        # - Mean of valid_matches (fraction of moving features that found a match).
+        # - Exponentially decreases as average XY distance increases.
+        # Z Confidence:
+        # - Similar to XY confidence but applied to Z distances.
+        # - Uses a stricter threshold, so a high Z confidence indicates good depth alignment.
+        # - Final Confidence = Average of XY and Z confidence scores.
     xy_confidence = np.mean(valid_matches) * np.exp(-np.mean(xy_distances[valid_matches, matches[valid_matches]]) / max_xy_distance)
     z_confidence = np.mean(valid_matches) * np.exp(-np.mean(z_distances[valid_matches, matches[valid_matches]]) / max_z_distance)
     confidence = (xy_confidence + z_confidence) / 2
