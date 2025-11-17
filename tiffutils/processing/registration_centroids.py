@@ -150,6 +150,7 @@ from scipy.ndimage import shift as nd_shift
 def register_3d_stack(
     fixed_centroids: np.ndarray,
     moving_centroids: np.ndarray,
+    moving_original: np.ndarray,
     upsample_factor: int = 1,
 ):
     """
