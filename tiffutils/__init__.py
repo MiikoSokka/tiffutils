@@ -11,11 +11,10 @@ from .io.loader import load_tiff
 
 from .processing.dtype import convert_dtype  # adjust based on actual file names
 from .processing.modify_histogram import histogram_stretch
-from .processing.registration import (
-    register_arrays,
-    register_stacks_from_paths
-    )
+from .processing.registration import register_arrays, register_stacks_from_paths
 from .processing.registration_blob import register_and_save_batch
+
+from .processing.registration_centroids import find_centroids, register_3d_stack
 
 from .stacker.stack_conversions import (
     zcyx_to_tzcyx_single_folder,
@@ -45,6 +44,8 @@ __all__ = [
     "register_arrays",
     "register_stacks_from_paths",
     "register_and_save_batch",
+    "find_centroids",
+    "register_3d_stack",
     "zcyx_to_tzcyx_single_folder",
     "get_YZ_and_ZX_views",
     "reorder_channels",
