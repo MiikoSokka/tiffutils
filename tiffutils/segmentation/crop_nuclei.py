@@ -12,11 +12,11 @@ They segment the nuclei, stack channels from multiple rounds and crops nuclei in
 from pathlib import Path
 import csv
 import re
-from typing import List, Tuple
+from typing import List, Tuple, Any
 import numpy as np
 from skimage.measure import block_reduce, regionprops
-from .io import load_tiff, save_tiff
-from .processing import histogram_stretch
+from ..io import load_tiff, save_tiff
+from ..processing import histogram_stretch
 
 
 def segment_nuclei_cpsam_3d(
@@ -26,7 +26,7 @@ def segment_nuclei_cpsam_3d(
     gpu: bool = True,
     anisotropy: float | None = None,
     min_size: int = 0,
-    model: models.CellposeModel | None = None,
+    model: Any | None = None,
     normalize: bool = True,
     verbose: bool = True,
 ) -> np.ndarray:
@@ -246,7 +246,7 @@ def crop_and_save_nuclei_from_mask(
         crop = arr_zcyx[z0:z1, :, y0:y1, x0:x1]
 
         # Filename: basename_nXX.tif
-        fname = f"{basename}_n{label_id:02d}.tif"
+        fname = f"{basename}n{label_id:02d}.tif"
         out_path = output_dir / fname
 
         save_tiff(histogram_stretch(crop), out_path)

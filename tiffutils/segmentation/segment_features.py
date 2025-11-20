@@ -2,8 +2,6 @@
 # Author: Miiko Sokka
 
 import numpy as np
-from aicssegmentation.core.vessel import filament_3d_wrapper
-from skimage.morphology import remove_small_objects
 
 def segmentMetaphaseChromosomes(array_3D, f3_param = [[1, 0.01]], minArea = 4):
     """
@@ -26,6 +24,15 @@ def segmentMetaphaseChromosomes(array_3D, f3_param = [[1, 0.01]], minArea = 4):
         A 3D NumPy array of the same shape as `array_3D`, of type uint16.
         Values are 0 for background and 65535 for segmented chromosome-like objects.
     """
+
+    try:
+        from aicssegmentation.core.vessel import filament_3d_wrapper
+        from skimage.morphology import remove_small_objects
+    except ImportError as e:
+        raise ImportError(
+            "find_centroids() requires `aicssegmentation` to be installed.\n"
+            "Install it in the environment where you run centroid detection."
+        ) from e
 
     # Segmentation
     bw = filament_3d_wrapper(array_3D, f3_param)

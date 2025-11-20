@@ -14,9 +14,14 @@ tiffutils/io/saver.py
 tiffutils/processing/__init__.py
 tiffutils/processing/dtype.py
 tiffutils/processing/modify_histogram.py
-tiffutils/registration/__init__.py
+tiffutils/processing/registration.py
+tiffutils/processing/registration_blob.py
+tiffutils/processing/registration_centroids.py
 tiffutils/segmentation/__init__.py
+tiffutils/segmentation/edges.py
+tiffutils/segmentation/segment_features.py
 tiffutils/stacker/__init__.py
 tiffutils/stacker/montage.py
+tiffutils/stacker/montage_QC.py
 tiffutils/stacker/projection.py
 tiffutils/stacker/stack_conversions.py

@@ -3,6 +3,8 @@
 
 import numpy as np
 import cv2
+from ..processing import convert_dtype  # Assuming you still need this elsewhere
+
 
 def apply_edges(array: np.ndarray) -> np.ndarray:
     """
@@ -54,10 +56,6 @@ def apply_edges(array: np.ndarray) -> np.ndarray:
 
     return output
 
-
-
-import numpy as np
-from tiffutils.processing.dtype import convert_dtype  # Assuming you still need this elsewhere
 
 def overlay_arrays(array1: np.ndarray, array2: np.ndarray, alpha: float = 0.5) -> np.ndarray:
     """
