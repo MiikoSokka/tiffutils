@@ -11,6 +11,12 @@ from .io.loader import load_tiff
 from .processing.dtype import convert_dtype  # adjust based on actual file names
 from .processing.modify_histogram import histogram_stretch
 
+from .segmentation.crop_nuclei import (
+    segment_nuclei_cpsam_3d,
+    crop_and_save_nuclei_from_mask,
+    stack_single_file,
+)
+
 __all__ = [
     "get_filenames",
     "match_filenames",
@@ -18,7 +24,11 @@ __all__ = [
     "save_tiff",
     "load_tiff",
     "convert_dtype",
-    "histogram_stretch"
+    "histogram_stretch",
+    "segment_nuclei_cpsam_3d",
+    "crop_and_save_nuclei_from_mask",
+    "stack_single_file",
+)
 ]
 
 
