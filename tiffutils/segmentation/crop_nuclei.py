@@ -19,9 +19,19 @@ from ..io import load_tiff, save_tiff
 from ..processing import histogram_stretch
 
 
+import numpy as np
+from typing import Any
+from skimage.measure import block_reduce
+
+
+import numpy as np
+from typing import Any
+from skimage.measure import block_reduce
+
+
 def segment_nuclei_cpsam_3d(
     vol: np.ndarray,
-    downsample_factor: int = 20,
+    downsample_factor: int | None = 20,
     diameter: float | None = None,
     gpu: bool = True,
     anisotropy: float | None = None,
@@ -32,38 +42,9 @@ def segment_nuclei_cpsam_3d(
 ) -> np.ndarray:
     """
     Segment nuclei in a 3D volume using Cellpose-SAM (cpsam) with 3D mode.
-
-    Parameters
-    ----------
-    vol : np.ndarray
-        Input volume with shape:
-            - (Z, Y, X)   or
-            - (Z, C, Y, X)  (in which case only channel 0 is used)
-    downsample_factor : int, default 20
-        XY downsampling factor (Z is left unchanged).
-    diameter : float or None
-        Approximate object diameter in pixels at the *downsampled* scale.
-        If None, Cellpose will try to estimate.
-    gpu : bool, default True
-        Use GPU if available.
-    anisotropy : float or None
-        Z anisotropy (Z spacing / XY pixel size). If None, Cellpose infers / ignores.
-    min_size : int, default 0
-        Minimum object size (in voxels) for mask filtering in Cellpose.
-    model : cellpose.models.CellposeModel or None
-        Pre-created model. If None, a new cpsam model is created.
-    normalize : bool, default True
-        If True, min-max normalize the input (per volume) to [0, 1] before downsampling.
-    verbose : bool, default True
-        Print basic progress messages.
-
-    Returns
-    -------
-    masks_zyx : np.ndarray
-        Integer-labeled mask array with shape (Z, Y, X) at the original resolution.
     """
 
-        # --- lazy import so that importing this module doesn't require cellpose ---
+    # --- lazy import so that importing this module doesn't require cellpose ---
     if model is None:
         try:
             from cellpose import models
@@ -75,7 +56,8 @@ def segment_nuclei_cpsam_3d(
         if verbose:
             print("[segment_nuclei_cpsam_3d] Creating Cellpose-SAM cpsam model...")
         model = models.CellposeModel(gpu=gpu)
-        
+
+    # Handle input shape
     if vol.ndim == 3:
         # Z, Y, X
         img_zyx = vol
@@ -88,7 +70,9 @@ def segment_nuclei_cpsam_3d(
     # Ensure we have a copy in float32
     img_zyx = np.asarray(img_zyx, dtype=np.float32)
 
-    # Optional normalization to [0, 1]
+    # ------------------------------------------------------------------
+    # Robust normalization to [0,1]
+    # ------------------------------------------------------------------
     if normalize:
         vmin = np.percentile(img_zyx, 1)
         vmax = np.percentile(img_zyx, 99)
@@ -96,17 +80,26 @@ def segment_nuclei_cpsam_3d(
             img_zyx = (img_zyx - vmin) / (vmax - vmin)
             img_zyx = np.clip(img_zyx, 0.0, 1.0)
         else:
-            # fallback to simple scaling if weird distribution
-            img_zyx = img_zyx - img_zyx.min()
-            if img_zyx.max() > 0:
-                img_zyx = img_zyx / img_zyx.max()
+            # fallback: simple [0,1] scaling with safety checks
+            img_zyx = img_zyx - np.min(img_zyx)
+            if img_zyx.size > 0:
+                max_val = float(np.max(img_zyx))
+            else:
+                max_val = 0.0
+            if max_val > 0.0:
+                img_zyx = img_zyx / max_val
 
     Z, Y, X = img_zyx.shape
     if verbose:
         print(f"[segment_nuclei_cpsam_3d] Input volume: {img_zyx.shape}, dtype={img_zyx.dtype}")
 
-    # Downsample in XY using block_reduce (mean pooling)
-    if downsample_factor > 1:
+    # ----------------------------------------------------------------------
+    # Downsampling configuration
+    # ----------------------------------------------------------------------
+    do_downsample = downsample_factor is not None and downsample_factor > 1
+    scale_xy = float(downsample_factor) if do_downsample else 1.0
+
+    if do_downsample:
         if verbose:
             print(
                 f"[segment_nuclei_cpsam_3d] Downsampling XY by factor {downsample_factor}: "
@@ -119,40 +112,79 @@ def segment_nuclei_cpsam_3d(
         )
     else:
         img_ds = img_zyx
-
-    # Create CPSAM model if not provided
-    if model is None:
         if verbose:
-            print("[segment_nuclei_cpsam_3d] Creating Cellpose-SAM cpsam model...")
-        model = models.CellposeModel(gpu=gpu)
+            print("[segment_nuclei_cpsam_3d] Downsample disabled — using full resolution.")
 
+    # ----------------------------------------------------------------------
+    # Rescale diameter, anisotropy, and min_size to match the working image
+    # (we assume the inputs are specified in *full-resolution* units)
+    # ----------------------------------------------------------------------
+    if diameter is not None:
+        diameter_eff = diameter / scale_xy
+    else:
+        diameter_eff = None
+
+    if anisotropy is not None:
+        # anisotropy_full = z_spacing / xy_pixel_size
+        # after XY downsample by d: anisotropy_new = anisotropy_full / d
+        anisotropy_eff = anisotropy / scale_xy
+    else:
+        anisotropy_eff = None
+
+    if min_size > 0:
+        if do_downsample:
+            # volume shrinks ~d^2 in XY (Z unchanged)
+            min_size_eff = int(round(min_size / (scale_xy ** 2)))
+            if min_size_eff < 1:
+                min_size_eff = 1
+        else:
+            min_size_eff = min_size
+    else:
+        min_size_eff = 0
+
+    if verbose:
+        print("[segment_nuclei_cpsam_3d] Effective parameters for Cellpose-SAM:")
+        print(f"    diameter (full-res): {diameter}")
+        print(f"    diameter (working):  {diameter_eff}")
+        print(f"    anisotropy (full-res): {anisotropy}")
+        print(f"    anisotropy (working):  {anisotropy_eff}")
+        print(f"    min_size (full-res): {min_size}")
+        print(f"    min_size (working):  {min_size_eff}")
+
+    if diameter_eff is not None and diameter_eff < 3 and verbose:
+        print(
+            "[segment_nuclei_cpsam_3d] WARNING: effective diameter < 3 pixels at working scale. "
+            "Cellpose performance may be poor; consider smaller downsample_factor or larger diameter."
+        )
+
+    # ----------------------------------------------------------------------
+    # Run Cellpose-SAM 3D
+    # ----------------------------------------------------------------------
     if verbose:
         print("[segment_nuclei_cpsam_3d] Running 3D Cellpose-SAM segmentation...")
 
-    # Cellpose expects 3D array; in our case x has shape (Z, Y, X)
     masks_ds, flows, styles = model.eval(
         img_ds,
-        diameter=diameter,
+        diameter=diameter_eff,
         do_3D=True,
-        anisotropy=anisotropy,
-        min_size=min_size,
+        anisotropy=anisotropy_eff,
+        min_size=min_size_eff,
         normalize=False,  # already normalized if requested
         batch_size=1,
         channel_axis=None,  # no separate channel dimension
         z_axis=0,           # Z is axis 0 in img_ds
     )
 
-    # masks_ds is (Z, Y_ds, X_ds)
     masks_ds = np.asarray(masks_ds)
 
-    if downsample_factor > 1:
-        # Upsample using nearest-neighbor expansion (repeat)
+    # Upsample only if downsampling was applied
+    if do_downsample:
         Y_ds, X_ds = masks_ds.shape[1:]
         if verbose:
             print(
                 f"[segment_nuclei_cpsam_3d] Upsampling masks back to original XY "
                 f"via repeat({downsample_factor}): {Y_ds}x{X_ds} -> "
-                f"{Y_ds*downsample_factor}x{X_ds*downsample_factor}"
+                f"{Y_ds * downsample_factor}x{X_ds * downsample_factor}"
             )
 
         masks_up = np.repeat(
@@ -160,8 +192,6 @@ def segment_nuclei_cpsam_3d(
             downsample_factor,
             axis=2,
         )
-
-        # Crop to original size in case Y, X are not exact multiples of the factor
         masks_zyx = masks_up[:, :Y, :X]
     else:
         masks_zyx = masks_ds
@@ -174,6 +204,10 @@ def segment_nuclei_cpsam_3d(
     return masks_zyx
 
 
+from pathlib import Path
+import numpy as np
+from skimage.measure import regionprops
+
 def crop_and_save_nuclei_from_mask(
     mask_zyx: np.ndarray,
     arr_zcyx: np.ndarray,
@@ -183,8 +217,14 @@ def crop_and_save_nuclei_from_mask(
     margin_z: int = 1,
 ) -> list[Path]:
     """
-    As before, but skip saving any nucleus whose bounding box touches
-    the edges of the full Z/Y/X volume.
+    Crop nuclei from a 3D mask and corresponding raw ZCYX image and save them.
+
+    Now saves:
+      - Cropped raw signal nuclei into <output_dir>/raw as {basename}nXX_raw.tif
+      - Cropped nuclei masks into <output_dir>/mask as {basename}nXX_mask.tif
+
+    Nuclei whose bounding box touches the edges of the full Z/Y/X volume are skipped.
+    Returns a list of Paths to the saved raw crops.
     """
 
     # Basic checks
@@ -203,14 +243,17 @@ def crop_and_save_nuclei_from_mask(
         )
 
     output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    raw_dir = output_dir / "raw"
+    mask_dir = output_dir / "mask"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    mask_dir.mkdir(parents=True, exist_ok=True)
 
     Z, Y, X = Zm, Ym, Xm
 
     # Measure regions
     props = regionprops(mask_zyx)
 
-    saved_paths: list[Path] = []
+    saved_raw_paths: list[Path] = []
 
     for p in props:
         label_id = p.label
@@ -242,17 +285,30 @@ def crop_and_save_nuclei_from_mask(
         x0 = int(max(0, np.floor(x0_s - margin_xy)))
         x1 = int(min(X, np.ceil(x1_s + margin_xy)))
 
-        # Crop (preserve channels)
-        crop = arr_zcyx[z0:z1, :, y0:y1, x0:x1]
+        # Crop raw (preserve channels)
+        crop_raw = arr_zcyx[z0:z1, :, y0:y1, x0:x1]
 
-        # Filename: basename_nXX.tif
-        fname = f"{basename}n{label_id:02d}.tif"
-        out_path = output_dir / fname
+        # Crop mask for this nucleus only (binary mask)
+        crop_mask = (mask_zyx[z0:z1, y0:y1, x0:x1] == label_id).astype(np.uint8)
 
-        save_tiff(histogram_stretch(crop), out_path)
-        saved_paths.append(out_path)
+        # Base name with nucleus index
+        base_with_n = f"{basename}n{label_id:02d}"
 
-    return saved_paths
+        # Filenames
+        raw_fname = f"{base_with_n}_raw.tif"
+        mask_fname = f"{base_with_n}_mask.tif"
+
+        raw_out_path = raw_dir / raw_fname
+        mask_out_path = mask_dir / mask_fname
+
+        # Save raw (with histogram stretch, as before)
+        save_tiff(histogram_stretch(crop_raw), raw_out_path)
+        # Save mask (no histogram stretch)
+        save_tiff(crop_mask, mask_out_path)
+
+        saved_raw_paths.append(raw_out_path)
+
+    return saved_raw_paths
 
 
 def _natural_key(s: str):
