@@ -258,20 +258,15 @@ def crop_and_save_nuclei_from_mask(
     for p in props:
         label_id = p.label
 
-        # bbox is (z_min, y_min, x_min, z_max, y_max, x_max)
+        # Region bounding box
         z0_s, y0_s, x0_s, z1_s, y1_s, x1_s = p.bbox
 
-        # ------------------------------------------------------------------
-        # Skip nuclei that touch any boundary of the full volume
-        # ------------------------------------------------------------------
+        # Skip only if the nucleus touches XY boundaries (ignore Z boundaries)
         touches_edge = (
-            z0_s == 0 or y0_s == 0 or x0_s == 0 or
-            z1_s == Z or y1_s == Y or x1_s == X
+            y0_s == 0 or x0_s == 0 or
+            y1_s == Y or x1_s == X
         )
-
         if touches_edge:
-            # print optional message
-            # print(f"Skipping nucleus {label_id} (touches boundary)")
             continue
         # ------------------------------------------------------------------
 
