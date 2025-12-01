@@ -3,5 +3,6 @@ from .filefinder import match_filenames
 from .filefinder import get_project_root
 from .saver import save_tiff
 from .loader import load_tiff
+from .show import show_array
 
-__all__ = ["get_filenames", "match_filenames", "get_project_root", "save_tiff", "load_tiff"]
+__all__ = ["get_filenames", "match_filenames", "get_project_root", "save_tiff", "load_tiff", "show_array"]

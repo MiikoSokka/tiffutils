@@ -6,9 +6,6 @@ import numpy as np
 import tifffile as tiff
 from skimage.registration import phase_cross_correlation
 
-import numpy as np
-from skimage.registration import phase_cross_correlation
-
 def register_arrays(arrays, fiducial_channel):
     """
     Registers a list of image stacks using fiducial beads on the specified channel.
@@ -60,8 +57,9 @@ def register_arrays(arrays, fiducial_channel):
 import os
 import numpy as np
 import tifffile as tiff
-import tiffutils as tiffu
 from skimage.registration import phase_cross_correlation
+from ..processing.dtype import convert_dtype
+from ..processing.dtype import histogram_stretch
 
 
 def register_stacks_from_paths(inputpaths, outputpaths, fiducial_channel, save_tiff_fn):
@@ -104,7 +102,7 @@ def register_stacks_from_paths(inputpaths, outputpaths, fiducial_channel, save_t
     print(f"Saving reference stack (unregistered) to:\n  {outputpaths[0]}")
     save_tiff_fn(fixed_image, str(outputpaths[0]))
 
-    fixed_image_ = tiffu.convert_dtype(tiffu.histogram_stretch(fixed_image[:, fiducial_channel, :, :]), 'uint8')
+    fixed_image_ = convert_dtype(histogram_stretch(fixed_image[:, fiducial_channel, :, :]), 'uint8')
 
     # Register remaining stacks
     for idx, (in_path, out_path) in enumerate(zip(inputpaths[1:], outputpaths[1:]), start=1):
@@ -129,7 +127,7 @@ def register_stacks_from_paths(inputpaths, outputpaths, fiducial_channel, save_t
             # Compute shift on fiducial channel
             shift, error, diffphase = phase_cross_correlation(
                 fixed_image_,
-                tiffu.convert_dtype(tiffu.histogram_stretch(moving_image[:, fiducial_channel, :, :]), 'uint8'),
+                convert_dtype(histogram_stretch(moving_image[:, fiducial_channel, :, :]), 'uint8'),
                 upsample_factor=1,
             )
             print("  ZYX shift:", shift)

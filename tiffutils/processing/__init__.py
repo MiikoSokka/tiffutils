@@ -3,6 +3,7 @@
 # Always-safe imports (no heavy dependencies)
 from .dtype import convert_dtype
 from .modify_histogram import histogram_stretch
+from .resample import resample_z_to_match_xy
 
 # Optional helper: make stubs for optional functions
 def _missing_dependency_stub(msg: str):
@@ -58,6 +59,7 @@ except ImportError as e:
 __all__ = [
     "convert_dtype",
     "histogram_stretch",
+    "resample_z_to_match_xy",
     "register_arrays",
     "register_stacks_from_paths",
     "register_and_save_batch",
