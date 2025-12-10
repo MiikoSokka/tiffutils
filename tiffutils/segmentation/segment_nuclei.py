@@ -14,20 +14,11 @@ import csv
 import re
 from typing import List, Tuple, Any
 import numpy as np
-from skimage.measure import block_reduce, regionprops
 from ..io import load_tiff, save_tiff
 from ..processing import histogram_stretch
 
-
-import numpy as np
-from typing import Any
-from skimage.measure import block_reduce
-
-
-import numpy as np
-from typing import Any
-from skimage.measure import block_reduce
-
+from skimage.measure import block_reduce, regionprops, label as cc_label
+from skimage.morphology import remove_small_objects
 
 def segment_nuclei_cpsam_3d(
     vol: np.ndarray,
@@ -169,7 +160,10 @@ def segment_nuclei_cpsam_3d(
         do_3D=True,
         anisotropy=anisotropy_eff,
         min_size=min_size_eff,
-        normalize=False,  # already normalized if requested
+        flow3D_smooth=1.6,
+        cellprob_threshold=2.0,
+        flow_threshold=0.4,
+        normalize=False,
         batch_size=1,
         channel_axis=None,  # no separate channel dimension
         z_axis=0,           # Z is axis 0 in img_ds
@@ -207,68 +201,117 @@ def segment_nuclei_cpsam_3d(
 from pathlib import Path
 import numpy as np
 from skimage.measure import regionprops
+import tifffile as tiff  # new
+
+# from .io import save_tiff   # or whatever your local import is
 
 def crop_and_save_nuclei_from_mask(
-    mask_zyx: np.ndarray,
-    arr_zcyx: np.ndarray,
-    output_dir: str | Path,
-    basename: str,
+    mask_path: str | Path,
+    raw_path: str | Path,
+    raw_output_dir: str | Path,
+    mask_output_dir: str | Path | None = None,
     margin_xy: int = 5,
     margin_z: int = 1,
-) -> list[Path]:
+) -> list[tuple[Path, Path | None]]:
     """
-    Crop nuclei from a 3D mask and corresponding raw ZCYX image and save them.
+    Load a 3D labeled mask and corresponding 3D/4D raw image from disk, crop
+    individual nuclei, and save the cropped raw (and optionally mask) arrays.
 
-    Now saves:
-      - Cropped raw signal nuclei into <output_dir>/raw as {basename}nXX_raw.tif
-      - Cropped nuclei masks into <output_dir>/mask as {basename}nXX_mask.tif
+    Parameters
+    ----------
+    mask_path : str or Path
+        Path to 3D labeled mask TIFF of shape (Z, Y, X).
+    raw_path : str or Path
+        Path to raw TIFF image of shape (Z, C, Y, X) or (Z, Y, X).
+        If 3D, a singleton channel dimension is added.
+    raw_output_dir : str or Path
+        Directory where cropped raw arrays will be saved.
+        Files are named `<base>_nXX.tiff`, where `<base>` is the stem of
+        `raw_path` (e.g. r01c01f02) and `XX` is the nucleus label.
+    mask_output_dir : str or Path or None, optional
+        Directory where cropped mask arrays will be saved, named
+        `<base>_nXX_mask.tiff`. If None, mask crops are not saved.
+    margin_xy : int, optional
+        Padding (in pixels) to add around the nucleus bounding box in X and Y.
+    margin_z : int, optional
+        Padding (in slices) to add around the nucleus bounding box in Z.
 
-    Nuclei whose bounding box touches the edges of the full Z/Y/X volume are skipped.
-    Returns a list of Paths to the saved raw crops.
+    Returns
+    -------
+    list[tuple[Path, Path | None]]
+        A list of (raw_path, mask_path) tuples for each saved nucleus.
+        `mask_path` is None if `mask_output_dir` is None.
+
+    Notes
+    -----
+    - Nuclei whose bounding box touches the XY edges of the full volume
+      are skipped.
+    - Cropped masks are saved as binary uint8 arrays (0/1) if
+      `mask_output_dir` is provided.
     """
 
-    # Basic checks
+    mask_path = Path(mask_path)
+    raw_path = Path(raw_path)
+
+    # --- Load arrays from disk ---
+    mask_zyx = tiff.imread(mask_path, is_ome=False)
+    raw = tiff.imread(raw_path, is_ome=False)
+
+    # --- Basic checks ---
     if mask_zyx.ndim != 3:
-        raise ValueError(f"mask_zyx must have shape (Z, Y, X), got {mask_zyx.shape}")
-    if arr_zcyx.ndim != 4:
-        raise ValueError(f"arr_zcyx must have shape (Z, C, Y, X), got {arr_zcyx.shape}")
+        raise ValueError(
+            f"mask_zyx must have shape (Z, Y, X), got {mask_zyx.shape}"
+        )
+
+    if raw.ndim == 3:
+        # Allow ZYX raw, convert to ZCYX with C=1
+        raw_zcyx = raw[:, np.newaxis, :, :]
+    elif raw.ndim == 4:
+        raw_zcyx = raw
+    else:
+        raise ValueError(
+            f"raw image must have shape (Z, Y, X) or (Z, C, Y, X), got {raw.shape}"
+        )
 
     Zm, Ym, Xm = mask_zyx.shape
-    Zi, Ci, Yi, Xi = arr_zcyx.shape
+    Zi, Ci, Yi, Xi = raw_zcyx.shape
 
     if (Zm, Ym, Xm) != (Zi, Yi, Xi):
         raise ValueError(
             f"Mask and image spatial dimensions must match: "
-            f"mask={mask_zyx.shape}, img={arr_zcyx.shape}"
+            f"mask={mask_zyx.shape}, img={raw_zcyx.shape}"
         )
 
-    output_dir = Path(output_dir)
-    raw_dir = output_dir / "raw"
-    mask_dir = output_dir / "mask"
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    mask_dir.mkdir(parents=True, exist_ok=True)
+    raw_output_dir = Path(raw_output_dir)
+    raw_output_dir.mkdir(parents=True, exist_ok=True)
+
+    if mask_output_dir is not None:
+        mask_output_dir = Path(mask_output_dir)
+        mask_output_dir.mkdir(parents=True, exist_ok=True)
 
     Z, Y, X = Zm, Ym, Xm
 
     # Measure regions
     props = regionprops(mask_zyx)
 
-    saved_raw_paths: list[Path] = []
+    saved_paths: list[tuple[Path, Path | None]] = []
+
+    # Base filename from raw (e.g. "r01c01f02")
+    base = raw_path.stem
 
     for p in props:
         label_id = p.label
 
-        # Region bounding box
+        # Region bounding box: (z_min, y_min, x_min, z_max, y_max, x_max)
         z0_s, y0_s, x0_s, z1_s, y1_s, x1_s = p.bbox
 
-        # Skip only if the nucleus touches XY boundaries (ignore Z boundaries)
+        # Skip if nucleus touches XY boundaries (ignore Z boundaries)
         touches_edge = (
             y0_s == 0 or x0_s == 0 or
             y1_s == Y or x1_s == X
         )
         if touches_edge:
             continue
-        # ------------------------------------------------------------------
 
         # Apply padding and clamp
         z0 = max(0, z0_s - margin_z)
@@ -281,29 +324,27 @@ def crop_and_save_nuclei_from_mask(
         x1 = int(min(X, np.ceil(x1_s + margin_xy)))
 
         # Crop raw (preserve channels)
-        crop_raw = arr_zcyx[z0:z1, :, y0:y1, x0:x1]
+        crop_raw = raw_zcyx[z0:z1, :, y0:y1, x0:x1]
 
         # Crop mask for this nucleus only (binary mask)
         crop_mask = (mask_zyx[z0:z1, y0:y1, x0:x1] == label_id).astype(np.uint8)
 
-        # Base name with nucleus index
-        base_with_n = f"{basename}n{label_id:02d}"
+        # Base name with nucleus index: <base>_nXX
+        base_with_n = f"{base}n{label_id:02d}"
 
-        # Filenames
-        raw_fname = f"{base_with_n}_raw.tif"
-        mask_fname = f"{base_with_n}_mask.tif"
+        # Raw save: <base>_nXX.tiff
+        raw_out_path = raw_output_dir / f"{base_with_n}.tiff"
+        save_tiff(crop_raw, raw_out_path)
 
-        raw_out_path = raw_dir / raw_fname
-        mask_out_path = mask_dir / mask_fname
+        # Optional mask save: <base>_nXX_mask.tiff
+        mask_out_path: Path | None = None
+        if mask_output_dir is not None:
+            mask_out_path = mask_output_dir / f"{base_with_n}.tiff"
+            save_tiff(crop_mask, mask_out_path)
 
-        # Save raw (with histogram stretch, as before)
-        save_tiff(histogram_stretch(crop_raw), raw_out_path)
-        # Save mask (no histogram stretch)
-        save_tiff(crop_mask, mask_out_path)
+        saved_paths.append((raw_out_path, mask_out_path))
 
-        saved_raw_paths.append(raw_out_path)
-
-    return saved_raw_paths
+    return saved_paths
 
 
 def _natural_key(s: str):

@@ -19,7 +19,9 @@ def show_array(arr, title=None):
         raise ValueError(f"Expected 2D array (Y,X). Got shape: {arr.shape}")
 
     plt.figure(figsize=(4,4))
-    plt.imshow(arr, cmap='gray')
+    plt.imshow(arr, cmap='inferno', interpolation='none',
+           vmin=arr.min(), vmax=arr.max())
+    plt.colorbar()
     plt.axis('off')
     if title:
         plt.title(title)

@@ -8,8 +8,8 @@ import os
 from ..segmentation.edges import apply_edges, overlay_arrays
 
 def create_3D_montage(
-    vol_zcyx: np.ndarray,
-    mask_zcyx: np.ndarray,
+    vol: np.ndarray,
+    mask: np.ndarray,
     save_path="montage.png",
     cmap_name='inferno',
     spacer=10,
@@ -22,28 +22,53 @@ def create_3D_montage(
     overlay_alpha: float = 0.5,
 ):
     """
-    Create an RGB square montage from a 4D ZCYX array, adding side and bottom projections
+    Create an RGB square montage from a 3D or 4D volume, adding side and bottom projections
     and labeling each panel with its channel number.
 
+    Accepted shapes:
+      - 4D: (Z, C, Y, X)
+      - 3D: (Z, Y, X)  -> internally treated as (Z, 1, Y, X)
+
     For each projection (XY, XZ, YZ):
-      - compute the projection of vol_zcyx and mask_zcyx
-      - detect edges in the mask projections with tiffu.apply_edges
-      - overlay edges onto the vol projections with tiffu.overlay_arrays
+      - compute the projection of vol and mask
+      - detect edges in the mask projections with apply_edges
+      - overlay edges onto the vol projections with overlay_arrays
       - use the resulting overlays to build the montage.
     """
 
-    # --- Basic checks ---
-    if vol_zcyx.ndim != 4:
-        raise ValueError(f"vol_zcyx must have shape (Z, C, Y, X), got {vol_zcyx.shape}")
-    if mask_zcyx.ndim != 4:
-        raise ValueError(f"mask_zcyx must have shape (Z, C, Y, X), got {mask_zcyx.shape}")
-    if vol_zcyx.shape != mask_zcyx.shape:
-        raise ValueError(
-            f"vol_zcyx and mask_zcyx must have the same shape, got "
-            f"{vol_zcyx.shape} and {mask_zcyx.shape}"
-        )
+    # --- Normalize shapes to (Z, C, Y, X) ---
+    if vol.ndim == 4:
+        if mask.ndim != 4:
+            raise ValueError(
+                f"When vol is 4D, mask must also be 4D. Got vol {vol.shape}, mask {mask.shape}"
+            )
+        if vol.shape != mask.shape:
+            raise ValueError(
+                f"vol and mask must have the same shape, got {vol.shape} and {mask.shape}"
+            )
+        vol_zcyx = vol
+        mask_zcyx = mask
+        Z, C, Y, X = vol_zcyx.shape
 
-    Z, C, Y, X = vol_zcyx.shape
+    elif vol.ndim == 3:
+        if mask.ndim != 3:
+            raise ValueError(
+                f"When vol is 3D, mask must also be 3D. Got vol {vol.shape}, mask {mask.shape}"
+            )
+        if vol.shape != mask.shape:
+            raise ValueError(
+                f"vol and mask must have the same shape, got {vol.shape} and {mask.shape}"
+            )
+        # Treat as single-channel: (Z, Y, X) -> (Z, 1, Y, X)
+        Z, Y, X = vol.shape
+        C = 1
+        vol_zcyx = vol[:, None, :, :]
+        mask_zcyx = mask[:, None, :, :]
+
+    else:
+        raise ValueError(
+            f"vol must be either 3D (Z, Y, X) or 4D (Z, C, Y, X), got shape {vol.shape}"
+        )
 
     # --- Build projections per channel (intensity + mask), but DO NOT overlay yet ---
     # vol_xy   : (C, Y, X)
@@ -83,14 +108,12 @@ def create_3D_montage(
     edge_yz = apply_edges(mask_yz)  # (C, Y, Z)
 
     # --- Overlay edges onto intensity projections, ONCE per projection type ---
-    # overlay_arrays works on 3D (C, Y, X)-like arrays, so shapes match.
     ov_xy = overlay_arrays(vol_xy, edge_xy, alpha=overlay_alpha)  # (C, Y, X)
     ov_xz = overlay_arrays(vol_xz, edge_xz, alpha=overlay_alpha)  # (C, Z, X)
     ov_yz = overlay_arrays(vol_yz, edge_yz, alpha=overlay_alpha)  # (C, Y, Z)
 
     # -----------------------------------------------------------
-    # The rest is essentially your original montage function,
-    # but using ov_xy / ov_xz / ov_yz instead of raw projections.
+    # Montage construction
     # -----------------------------------------------------------
     def normalize(img):
         img = img.astype(np.float32)
@@ -132,7 +155,7 @@ def create_3D_montage(
         y_start = margin_top + label_space + r * (panel_height + spacer * 2 + row_spacer)
         x_start = margin_left + c * (panel_width + spacer * 2)
 
-        # Map overlaid intensity+edges (uint8) -> [0,1] -> colormap RGB
+        # Map overlaid intensity+edges -> [0,1] -> colormap RGB
         base_rgb   = cmap(normalize(ov_xy[i]))[:, :, :3]   # (Y,  X, 3)
         side_rgb   = cmap(normalize(ov_xz[i]))[:, :, :3]   # (Yx, X, 3)
         bottom_rgb = cmap(normalize(ov_yz[i]))[:, :, :3]   # (Y,  Xy,3)
