@@ -30,6 +30,9 @@ def segment_nuclei_cpsam_3d(
     model: Any | None = None,
     normalize: bool = True,
     verbose: bool = True,
+    flow3D_smooth: float | None = 1.6,
+    cellprob_threshold: float | None =2.0,
+    flow_threshold: float | None =0.4,
 ) -> np.ndarray:
     """
     Segment nuclei in a 3D volume using Cellpose-SAM (cpsam) with 3D mode.
@@ -160,10 +163,10 @@ def segment_nuclei_cpsam_3d(
         do_3D=True,
         anisotropy=anisotropy_eff,
         min_size=min_size_eff,
-        flow3D_smooth=1.6,
-        cellprob_threshold=2.0,
-        flow_threshold=0.4,
-        normalize=False,
+        flow3D_smooth=flow3D_smooth,
+        cellprob_threshold=cellprob_threshold,
+        flow_threshold=flow_threshold,
+        normalize=normalize,
         batch_size=1,
         channel_axis=None,  # no separate channel dimension
         z_axis=0,           # Z is axis 0 in img_ds
