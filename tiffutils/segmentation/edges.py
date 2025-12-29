@@ -2,8 +2,13 @@
 # Author: Miiko Sokka
 
 import numpy as np
-import cv2
+from .._optional import optional_import
 from ..processing import convert_dtype  # Assuming you still need this elsewhere
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 
 def apply_edges(array: np.ndarray) -> np.ndarray:
@@ -27,6 +32,11 @@ def apply_edges(array: np.ndarray) -> np.ndarray:
     output = np.zeros_like(array)
 
     def detect_edges_2d(img_2d):
+        if cv2 is None:
+            raise ImportError(
+                "OpenCV (cv2) is required for Canny edge detection. "
+                "Install with: conda install -c conda-forge opencv"
+            )
         # Normalize to 0–255 and convert to uint8
         img_min, img_max = img_2d.min(), img_2d.max()
         if img_max > img_min:

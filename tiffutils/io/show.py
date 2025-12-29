@@ -2,7 +2,7 @@
 # Author: Miiko Sokka
 
 import numpy as np
-import matplotlib.pyplot as plt
+from .._optional import optional_import
 
 def show_array(arr, title=None):
     """
