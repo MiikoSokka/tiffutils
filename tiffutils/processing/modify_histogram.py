@@ -29,6 +29,8 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
     - For [0, 1] normalization, use tiffutils.processing.dtype(array, dtype=float32)
     """
 
+    print("Running histogram_stretch ... ")
+
     p_lower, p_upper = intensity_scaling_param
 
     if p_lower < 0 or p_upper > 100:

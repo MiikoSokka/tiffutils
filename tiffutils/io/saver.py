@@ -24,6 +24,6 @@ def save_tiff(array, save_path):
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
     tiff.imwrite(save_path, array, imagej=True)
-    print(f"{os.path.basename(save_path)} saved.")
+    print(f"{os.path.basename(save_path)} saved in {os.path.dirname(save_path)}")
     print(f"\tShape = {array.shape}")
     print(f"\tDatatype = {array.dtype}")

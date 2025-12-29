@@ -11,6 +11,25 @@ authors = [{name = "Miiko Sokka"}]
 license = "MIT"
 readme = "README.md"
 requires-python = ">=3.8"
+dependencies = [
+  "numpy",
+  "scipy",
+  "scikit-image",
+  "tifffile",
+  "natsort",
+]
+
+[project.optional-dependencies]
+viz = ["matplotlib"]
+opencv = ["opencv-python"]           # if you ever pip install; on conda use "opencv"
+aics = ["aicssegmentation"]
+sitk = ["SimpleITK"]
+all = [
+  "matplotlib",
+  "opencv-python",
+  "aicssegmentation",
+  "SimpleITK",
+]
 
 [project.urls]
 "Source" = "https://github.com/yourusername/tiffutils"
