@@ -13,6 +13,8 @@ from skimage.segmentation import watershed
 from skimage.measure import label, regionprops
 from scipy.ndimage import distance_transform_edt, binary_dilation
 
+from tiffutils.io.logging_utils import get_logger, Timer
+LOG = get_logger(__name__)
 
 def find_centroids(
     array_3D,
@@ -50,6 +52,9 @@ def find_centroids(
     centroids_3d : np.ndarray
         Array of centroids, shape (N, 3) with (z, y, x) coordinates (float).
     """
+
+    t = Timer()
+    LOG.info("start shape=%s s3 param=%s", array_3D.shape, s3_param)
 
     if array_3D.ndim != 3:
         raise ValueError(f"array_3D must be 3D (Z, Y, X). Got shape {array_3D.shape}")
@@ -139,6 +144,8 @@ def find_centroids(
         selem = ball(radius)
         centroids_mask = binary_dilation(points, selem)
     
+    LOG.info("done n=%d time_s=%.3f", n, t.s())
+    
     # centroids_mask is bool, ideal for phase_cross_correlation
     return centroids_mask, centroids_3d
 
@@ -147,7 +154,7 @@ def find_centroids(
 import numpy as np
 from scipy.ndimage import shift as nd_shift
 from scipy.spatial import cKDTree
-from skimage.registration import phase_cross_correlation
+from skimage.feature import match_template
 from skimage.transform import warp
 
 
@@ -181,6 +188,36 @@ def _dice_error(fixed_mask: np.ndarray, moving_mask: np.ndarray, shift_vec_zyx):
     return 1.0 - float(dice), moving_shifted
 
 
+def _dice_error_region_after_shift(
+    fixed_mask: np.ndarray,
+    moving_mask: np.ndarray,
+    shift_vec_zyx,
+    region_yx,  # (y_fixed, x_fixed, h, w)
+):
+    dz, dy, dx = shift_vec_zyx
+    y, x, h, w = region_yx
+
+    moving_shifted = nd_shift(
+        moving_mask.astype(np.float32),
+        shift=(dz, dy, dx),
+        order=0,
+        mode="constant",
+        cval=0.0,
+    ) > 0.5
+
+    f = fixed_mask[:, y : y + h, x : x + w]
+    m = moving_shifted[:, y : y + h, x : x + w]
+
+    inter = np.count_nonzero(f & m)
+    na = np.count_nonzero(f)
+    nb = np.count_nonzero(m)
+    if (na + nb) == 0:
+        dice = 1.0
+    else:
+        dice = (2.0 * inter) / (na + nb)
+    return 1.0 - float(dice)
+
+
 def _extract_points_2d(mask_zyx: np.ndarray):
     m2 = mask_zyx.any(axis=0)
     yy, xx = np.nonzero(m2)
@@ -203,6 +240,50 @@ def _mutual_nn_matches(a_xy: np.ndarray, b_xy: np.ndarray, max_dist: float):
     mutual = (i == np.where(ok)[0]) & (d_ba <= max_dist)
 
     return a1[mutual], b1[mutual]
+
+
+def _estimate_dz_from_z_profiles(fixed_mask: np.ndarray, moving_mask: np.ndarray, max_abs_shift: int | None = None):
+    f = fixed_mask.astype(np.bool_, copy=False)
+    m = moving_mask.astype(np.bool_, copy=False)
+
+    fz = f.sum(axis=(1, 2)).astype(np.float32)
+    mz = m.sum(axis=(1, 2)).astype(np.float32)
+
+    fz -= fz.mean() if fz.size else 0.0
+    mz -= mz.mean() if mz.size else 0.0
+
+    if np.all(fz == 0) or np.all(mz == 0):
+        return 0.0
+
+    corr = np.correlate(fz, mz, mode="full")
+    lags = np.arange(-(mz.size - 1), fz.size, dtype=np.int64)
+
+    if max_abs_shift is not None:
+        max_abs_shift = int(max_abs_shift)
+        keep = (lags >= -max_abs_shift) & (lags <= max_abs_shift)
+        corr = corr[keep]
+        lags = lags[keep]
+
+    dz = float(lags[int(np.argmax(corr))])
+    return dz
+
+
+def _normxcorr_match_location(fixed_2d: np.ndarray, template_2d: np.ndarray):
+    """
+    Normalized cross-correlation template matching.
+    Returns (y, x, score) where (y,x) is the TOP-LEFT placement of template in fixed.
+    """
+    fixed_2d = fixed_2d.astype(np.float32, copy=False)
+    template_2d = template_2d.astype(np.float32, copy=False)
+
+    if template_2d.shape[0] > fixed_2d.shape[0] or template_2d.shape[1] > fixed_2d.shape[1]:
+        return None, None, float("-inf")
+
+    cc = match_template(fixed_2d, template_2d, pad_input=False)
+    peak = np.unravel_index(int(np.argmax(cc)), cc.shape)
+    y, x = int(peak[0]), int(peak[1])
+    score = float(cc[peak])
+    return y, x, score
 
 
 def _fit_brown_conrady_forward(fixed_xy: np.ndarray, moving_xy: np.ndarray, cx: float, cy: float, scale: float):
@@ -284,20 +365,20 @@ def _warp2d_lens(image_2d: np.ndarray, k1, k2, k3, p1, p2, cx, cy, scale, order:
     )
 
 
-def _try_sitk_bspline_2d(fixed_2d: np.ndarray, moving_2d: np.ndarray, mesh_size=(4, 4), n_iter=80):
+def _try_sitk_affine_2d(fixed_2d: np.ndarray, moving_2d: np.ndarray, n_iter: int = 200):
     try:
         import SimpleITK as sitk
     except ImportError:
-        print("SimpleITK not available: skipping B-spline residual and returning lens-only.", flush=True)
+        print("SimpleITK not available: skipping affine and returning rigid-only.", flush=True)
         return None, False
 
     fixed = sitk.GetImageFromArray(fixed_2d.astype(np.float32))
     moving = sitk.GetImageFromArray(moving_2d.astype(np.float32))
 
-    tx = sitk.BSplineTransformInitializer(fixed, mesh_size)
+    tx0 = sitk.AffineTransform(2)
 
     reg = sitk.ImageRegistrationMethod()
-    reg.SetInitialTransform(tx, inPlace=False)
+    reg.SetInitialTransform(tx0, inPlace=False)
     reg.SetMetricAsCorrelation()
     reg.SetInterpolator(sitk.sitkLinear)
 
@@ -309,6 +390,44 @@ def _try_sitk_bspline_2d(fixed_2d: np.ndarray, moving_2d: np.ndarray, mesh_size=
         costFunctionConvergenceFactor=1e+7,
     )
 
+    reg.SetShrinkFactorsPerLevel([4, 2, 1])
+    reg.SetSmoothingSigmasPerLevel([2.0, 1.0, 0.0])
+    reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOff()
+
+    out_tx = reg.Execute(fixed, moving)
+    return out_tx, True
+
+
+def _try_sitk_bspline_2d(fixed_2d: np.ndarray, moving_2d: np.ndarray, mesh_size=(2, 2), n_iter: int = 60):
+    """
+    VERY SMOOTH residual: coarse B-spline transform on 2D masks.
+    mesh_size is intentionally tiny (2x2 by default) to only allow gentle bending.
+    """
+    try:
+        import SimpleITK as sitk
+    except ImportError:
+        print("SimpleITK not available: skipping smooth nonrigid refinement.", flush=True)
+        return None, False
+
+    fixed = sitk.GetImageFromArray(fixed_2d.astype(np.float32))
+    moving = sitk.GetImageFromArray(moving_2d.astype(np.float32))
+
+    tx0 = sitk.BSplineTransformInitializer(fixed, mesh_size)
+
+    reg = sitk.ImageRegistrationMethod()
+    reg.SetInitialTransform(tx0, inPlace=False)
+    reg.SetMetricAsCorrelation()
+    reg.SetInterpolator(sitk.sitkLinear)
+
+    reg.SetOptimizerAsLBFGSB(
+        gradientConvergenceTolerance=1e-5,
+        numberOfIterations=int(n_iter),
+        maximumNumberOfCorrections=5,
+        maximumNumberOfFunctionEvaluations=2000,
+        costFunctionConvergenceFactor=1e+7,
+    )
+
+    # Coarse-to-fine, but still very smooth
     reg.SetShrinkFactorsPerLevel([4, 2, 1])
     reg.SetSmoothingSigmasPerLevel([2.0, 1.0, 0.0])
     reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOff()
@@ -329,26 +448,34 @@ def register_3d_stack(
     match_max_dist: float = 60.0,
     lens_center_search_px: int = 60,
     lens_center_step_px: int = 5,
-    bspline_mesh_size: tuple[int, int] = (4, 4),
-    bspline_iters: int = 80,
+    affine_iters: int = 200,
+    smooth_bspline_mesh_size: tuple[int, int] = (2, 2),
+    smooth_bspline_iters: int = 60,
 ):
     """
-    Policy (single threshold check):
-      1) Run rigid PCC always and compute Dice error on rigid-shifted masks.
-      2) If dice_error <= dice_threshold: return rigid-only.
-      3) Else (dice_error > dice_threshold): do shrinking central-crop PCC to get a better rigid shift
-         (no additional threshold checks), then ALWAYS run lens model + smooth residual B-spline FFD.
+    Workflow:
+      1) Estimate dz from Z-profiles (no PCC).
+      2) Iterate shrinking central crop sizes:
+           - NCC template match moving_crop_2d within fixed_2d
+           - Convert match position -> (dy,dx)
+           - Compute Dice error ONLY over the matched region
+           - PRINT Dice error each iteration
+           - STOP EARLY once crop_dice_error <= threshold
+      3) Apply that shift to FULL moving_original.
+      4) Global 2D affine registration (SimpleITK) on masks; apply slice-by-slice to FULL moving_original.
+      5) If (and only if) the crop-search actually *accepted* a crop (crop_dice_error <= threshold),
+         run an EXTRA **very smooth** 2D B-spline refinement on top of affine; apply slice-by-slice.
 
     Returns
     -------
     registered : np.ndarray
-        Aligned moving_original (rigid-only or refined), same shape/dtype.
+        Final aligned moving_original.
     shift_vec : np.ndarray
-        Final rigid shift (dz, dy, dx) applied before nonrigid refinement.
+        Rigid shift used (dz,dy,dx) before affine/nonrigid.
     error : float
-        Final Dice error after the applied transform(s).
+        Final Dice error after the applied transforms (full volume).
     """
-    # --- Prepare ZYX boolean volumes for registration ---
+    # --- Prepare ZYX boolean volumes ---
     if fixed_centroids.ndim == 4:
         fixed_for_reg = fixed_centroids.any(axis=1)
         moving_for_reg = moving_centroids.any(axis=1)
@@ -356,73 +483,84 @@ def register_3d_stack(
         fixed_for_reg = fixed_centroids.astype(bool, copy=False)
         moving_for_reg = moving_centroids.astype(bool, copy=False)
 
-    fixed_f32 = fixed_for_reg.astype(np.float32)
-    moving_f32 = moving_for_reg.astype(np.float32)
-
-    # --- 1) Rigid PCC (full volume) ---
-    shift_vec, _, _ = phase_cross_correlation(fixed_f32, moving_f32)
-    shift_vec = np.asarray(shift_vec, dtype=np.float32)
-
-    rigid_error, moving_shifted_mask = _dice_error(fixed_for_reg, moving_for_reg, shift_vec)
-
-    # --- 2) If rigid is good enough, apply rigid and return ---
-    dz, dy, dx = map(float, shift_vec)
     orig_dtype = moving_original.dtype
+    Z, Y, X = fixed_for_reg.shape
 
-    if rigid_error <= float(dice_threshold):
-        if moving_original.ndim == 3:
-            shift_full = (dz, dy, dx)
-        else:
-            shift_full = (dz, 0.0, dy, dx)
+    # --- (1) dz from Z profiles ---
+    dz0 = _estimate_dz_from_z_profiles(fixed_for_reg, moving_for_reg)
 
-        shifted = nd_shift(
-            moving_original,
-            shift=shift_full,
-            order=1,
-            mode="constant",
-            cval=0.0,
-        )
+    fixed_2d = fixed_for_reg.any(axis=0).astype(np.float32)
 
-        if np.issubdtype(orig_dtype, np.integer):
-            info = np.iinfo(orig_dtype)
-            shifted = np.clip(np.rint(shifted), info.min, info.max).astype(orig_dtype)
-        else:
-            shifted = shifted.astype(orig_dtype, copy=False)
-
-        return shifted, np.asarray([dz, dy, dx], dtype=np.float32), float(rigid_error)
-
-    # --- 3) Bad rigid -> ALWAYS do central-crop PCC + refinement ---
-    # Central-crop loop chooses the best shift by Dice (but does not re-branch on threshold)
-    best_err = rigid_error
-    best_shift = shift_vec
+    best_shift = np.asarray([dz0, 0.0, 0.0], dtype=np.float32)
+    best_crop_err = np.inf
+    accepted = False
 
     size = int(central_start)
     while size >= int(min_central):
-        fixed_crop, _ = _center_crop_xy(fixed_f32, size)
-        moving_crop, _ = _center_crop_xy(moving_f32, size)
+        moving_crop_zyx, (y0, y1, x0, x1) = _center_crop_xy(moving_for_reg, size)
+        h = int(y1 - y0)
+        w = int(x1 - x0)
 
-        sv, _, _ = phase_cross_correlation(fixed_crop, moving_crop)
-        sv = np.asarray(sv, dtype=np.float32)
+        templ_2d = moving_crop_zyx.any(axis=0).astype(np.float32)
+        if np.count_nonzero(templ_2d) == 0:
+            print(
+                f"[normxcorr] size={size:4d} crop(y={y0}:{y1}, x={x0}:{x1}) "
+                f"template_empty -> skip (crop_dice_error=inf)",
+                flush=True,
+            )
+            size -= int(central_step)
+            continue
 
-        e, _ = _dice_error(fixed_for_reg, moving_for_reg, sv)
-        if e < best_err:
-            best_err = e
-            best_shift = sv
+        y_peak, x_peak, score = _normxcorr_match_location(fixed_2d, templ_2d)
+        if y_peak is None:
+            print(
+                f"[normxcorr] size={size:4d} crop(y={y0}:{y1}, x={x0}:{x1}) "
+                f"template_larger_than_fixed -> skip (crop_dice_error=inf)",
+                flush=True,
+            )
+            size -= int(central_step)
+            continue
+
+        dy = float(y_peak - y0)
+        dx = float(x_peak - x0)
+        shift_vec = np.asarray([dz0, dy, dx], dtype=np.float32)
+
+        region = (y_peak, x_peak, h, w)
+        crop_err = _dice_error_region_after_shift(fixed_for_reg, moving_for_reg, shift_vec, region)
+
+        print(
+            f"[normxcorr] size={size:4d} crop(y={y0}:{y1}, x={x0}:{x1}) "
+            f"match(top-left)=(y={y_peak},x={x_peak}) score={score:.4f} "
+            f"shift(dz,dy,dx)=({dz0:.2f},{dy:.2f},{dx:.2f}) crop_dice_error={crop_err:.4f}",
+            flush=True,
+        )
+
+        # Use the first accepted shift (as requested)
+        best_shift = shift_vec
+        best_crop_err = crop_err
+
+        if crop_err <= float(dice_threshold):
+            accepted = True
+            break
 
         size -= int(central_step)
 
-    shift_vec = best_shift
-    dz, dy, dx = map(float, shift_vec)
-
-    # Update shifted mask based on the chosen best shift (used for lens/bspline)
-    _, moving_shifted_mask = _dice_error(fixed_for_reg, moving_for_reg, shift_vec)
-
-    # Apply the chosen rigid shift to moving_original
-    if moving_original.ndim == 3:
-        shift_full = (dz, dy, dx)
+    dz, dy, dx = map(float, best_shift)
+    if accepted:
+        print(
+            f"[normxcorr] ACCEPTED: shift(dz,dy,dx)=({dz:.2f},{dy:.2f},{dx:.2f}) "
+            f"crop_dice_error={best_crop_err:.4f} <= {float(dice_threshold):.3f}",
+            flush=True,
+        )
     else:
-        shift_full = (dz, 0.0, dy, dx)
+        print(
+            f"[normxcorr] NOT ACCEPTED: using last tried shift(dz,dy,dx)=({dz:.2f},{dy:.2f},{dx:.2f}) "
+            f"crop_dice_error={best_crop_err:.4f} (threshold={float(dice_threshold):.3f})",
+            flush=True,
+        )
 
+    # --- Apply rigid shift to FULL moving_original ---
+    shift_full = (dz, dy, dx) if moving_original.ndim == 3 else (dz, 0.0, dy, dx)
     rigid_shifted = nd_shift(
         moving_original,
         shift=shift_full,
@@ -431,118 +569,99 @@ def register_3d_stack(
         cval=0.0,
     )
 
-    print(
-        f"Rigid -> affine/nonrigid refinement (initial dice_error={rigid_error:.3f} > {dice_threshold:.3f}; "
-        f"best-central dice_error={best_err:.3f})",
-        flush=True,
-    )
+    # shifted masks for affine estimation + QC
+    _, moving_shifted_mask = _dice_error(fixed_for_reg, moving_for_reg, best_shift)
 
-    # --- Lens model fit from bead correspondences (2D, after improved rigid) ---
-    fixed_pts = _extract_points_2d(fixed_for_reg)
-    moving_pts = _extract_points_2d(moving_shifted_mask)
+    # --- (4) Global affine registration (2D) ---
+    fixed_aff_2d = fixed_for_reg.any(axis=0).astype(np.float32)
+    moving_aff_2d = moving_shifted_mask.any(axis=0).astype(np.float32)
 
-    m_xy, f_xy = _mutual_nn_matches(moving_pts, fixed_pts, max_dist=float(match_max_dist))
-    fixed_xy = f_xy
-    moving_xy = m_xy
+    tx_aff, ok_aff = _try_sitk_affine_2d(fixed_aff_2d, moving_aff_2d, n_iter=int(affine_iters))
 
-    Z, Y, X = fixed_for_reg.shape
-    scale = float(max(X, Y))
-    cx0, cy0 = 0.5 * (X - 1), 0.5 * (Y - 1)
-
-    best = None
-    if lens_center_search_px and lens_center_search_px > 0 and fixed_xy.shape[0] >= 50:
-        r = int(lens_center_search_px)
-        step = int(max(1, lens_center_step_px))
-        for dcx in range(-r, r + 1, step):
-            for dcy in range(-r, r + 1, step):
-                cx = cx0 + dcx
-                cy = cy0 + dcy
-                k1, k2, k3, p1, p2 = _fit_brown_conrady_forward(fixed_xy, moving_xy, cx, cy, scale)
-
-                xu = (fixed_xy[:, 0] - cx) / scale
-                yu = (fixed_xy[:, 1] - cy) / scale
-                r2 = xu * xu + yu * yu
-                r4 = r2 * r2
-                r6 = r4 * r2
-                radial = 1.0 + k1 * r2 + k2 * r4 + k3 * r6
-                xd = xu * radial + 2.0 * p1 * xu * yu + p2 * (r2 + 2.0 * xu * xu)
-                yd = yu * radial + p1 * (r2 + 2.0 * yu * yu) + 2.0 * p2 * xu * yu
-                pred = np.stack([xd * scale + cx, yd * scale + cy], axis=1)
-
-                err = np.sqrt(((pred - moving_xy) ** 2).sum(axis=1))
-                score = float(np.median(err))
-                cand = (score, cx, cy, k1, k2, k3, p1, p2)
-                if best is None or cand[0] < best[0]:
-                    best = cand
-
-        _, cx, cy, k1, k2, k3, p1, p2 = best
-    else:
-        cx, cy = cx0, cy0
-        k1, k2, k3, p1, p2 = _fit_brown_conrady_forward(fixed_xy, moving_xy, cx, cy, scale)
-
-    # Apply lens warp slice-by-slice
-    if rigid_shifted.ndim == 3:
-        lens_out = np.empty_like(rigid_shifted, dtype=np.float32)
-        for z in range(rigid_shifted.shape[0]):
-            lens_out[z] = _warp2d_lens(rigid_shifted[z].astype(np.float32), k1, k2, k3, p1, p2, cx, cy, scale, order=1)
-    else:
-        lens_out = np.empty_like(rigid_shifted, dtype=np.float32)
-        for z in range(rigid_shifted.shape[0]):
-            for c in range(rigid_shifted.shape[1]):
-                lens_out[z, c] = _warp2d_lens(rigid_shifted[z, c].astype(np.float32), k1, k2, k3, p1, p2, cx, cy, scale, order=1)
-
-    # Warp mask too for bspline + final QC
-    moving_mask_lens = np.zeros_like(moving_shifted_mask, dtype=bool)
-    for z in range(moving_shifted_mask.shape[0]):
-        warped = _warp2d_lens(moving_shifted_mask[z].astype(np.float32), k1, k2, k3, p1, p2, cx, cy, scale, order=0)
-        moving_mask_lens[z] = warped > 0.5
-
-    # --- Residual very smooth B-spline (2D) ---
-    fixed_2d = fixed_for_reg.any(axis=0).astype(np.float32)
-    moving_2d = moving_mask_lens.any(axis=0).astype(np.float32)
-
-    tx, ok = _try_sitk_bspline_2d(fixed_2d, moving_2d, mesh_size=bspline_mesh_size, n_iter=bspline_iters)
-
-    if ok:
+    if ok_aff:
         import SimpleITK as sitk
 
-        def _resample_2d(arr2d: np.ndarray):
+        def _resample_2d(arr2d: np.ndarray, tx, interp):
             mov = sitk.GetImageFromArray(arr2d.astype(np.float32))
             ref = sitk.GetImageFromArray(np.zeros_like(arr2d, dtype=np.float32))
-            res = sitk.Resample(mov, ref, tx, sitk.sitkLinear, 0.0, sitk.sitkFloat32)
+            res = sitk.Resample(mov, ref, tx, interp, 0.0, sitk.sitkFloat32)
             return sitk.GetArrayFromImage(res)
 
-        def _resample_2d_nn(arr2d: np.ndarray):
-            mov = sitk.GetImageFromArray(arr2d.astype(np.float32))
-            ref = sitk.GetImageFromArray(np.zeros_like(arr2d, dtype=np.float32))
-            res = sitk.Resample(mov, ref, tx, sitk.sitkNearestNeighbor, 0.0, sitk.sitkFloat32)
-            return sitk.GetArrayFromImage(res)
-
-        if lens_out.ndim == 3:
-            out = np.empty_like(lens_out, dtype=np.float32)
-            for z in range(lens_out.shape[0]):
-                out[z] = _resample_2d(lens_out[z])
+        # apply affine to moving_original (rigid shifted)
+        if rigid_shifted.ndim == 3:
+            out_aff = np.empty_like(rigid_shifted, dtype=np.float32)
+            for z in range(rigid_shifted.shape[0]):
+                out_aff[z] = _resample_2d(rigid_shifted[z], tx_aff, sitk.sitkLinear)
         else:
-            out = np.empty_like(lens_out, dtype=np.float32)
-            for z in range(lens_out.shape[0]):
-                for c in range(lens_out.shape[1]):
-                    out[z, c] = _resample_2d(lens_out[z, c])
+            out_aff = np.empty_like(rigid_shifted, dtype=np.float32)
+            for z in range(rigid_shifted.shape[0]):
+                for c in range(rigid_shifted.shape[1]):
+                    out_aff[z, c] = _resample_2d(rigid_shifted[z, c], tx_aff, sitk.sitkLinear)
 
-        moving_mask_final = np.zeros_like(moving_mask_lens, dtype=bool)
-        for z in range(moving_mask_lens.shape[0]):
-            moving_mask_final[z] = _resample_2d_nn(moving_mask_lens[z].astype(np.float32)) > 0.5
+        # apply affine to mask
+        moving_mask_aff = np.zeros_like(moving_shifted_mask, dtype=bool)
+        for z in range(moving_shifted_mask.shape[0]):
+            moving_mask_aff[z] = _resample_2d(moving_shifted_mask[z].astype(np.float32), tx_aff, sitk.sitkNearestNeighbor) > 0.5
     else:
-        out = lens_out
-        moving_mask_final = moving_mask_lens
+        out_aff = rigid_shifted.astype(np.float32, copy=False)
+        moving_mask_aff = moving_shifted_mask
 
-    # Cast back to original dtype
+    # --- (5) VERY SMOOTH nonrigid refinement, ONLY when crop was accepted ---
+    if accepted and ok_aff:
+        fixed_nr_2d = fixed_for_reg.any(axis=0).astype(np.float32)
+        moving_nr_2d = moving_mask_aff.any(axis=0).astype(np.float32)
+
+        tx_nr, ok_nr = _try_sitk_bspline_2d(
+            fixed_nr_2d,
+            moving_nr_2d,
+            mesh_size=tuple(map(int, smooth_bspline_mesh_size)),
+            n_iter=int(smooth_bspline_iters),
+        )
+
+        if ok_nr:
+            import SimpleITK as sitk
+
+            def _resample_2d(arr2d: np.ndarray, tx, interp):
+                mov = sitk.GetImageFromArray(arr2d.astype(np.float32))
+                ref = sitk.GetImageFromArray(np.zeros_like(arr2d, dtype=np.float32))
+                res = sitk.Resample(mov, ref, tx, interp, 0.0, sitk.sitkFloat32)
+                return sitk.GetArrayFromImage(res)
+
+            print(
+                f"[smooth-nonrigid] running coarse B-spline refinement mesh={smooth_bspline_mesh_size} iters={smooth_bspline_iters}",
+                flush=True,
+            )
+
+            # apply B-spline to affine output
+            if out_aff.ndim == 3:
+                out = np.empty_like(out_aff, dtype=np.float32)
+                for z in range(out_aff.shape[0]):
+                    out[z] = _resample_2d(out_aff[z], tx_nr, sitk.sitkLinear)
+            else:
+                out = np.empty_like(out_aff, dtype=np.float32)
+                for z in range(out_aff.shape[0]):
+                    for c in range(out_aff.shape[1]):
+                        out[z, c] = _resample_2d(out_aff[z, c], tx_nr, sitk.sitkLinear)
+
+            # apply B-spline to mask for final QC
+            moving_mask_final = np.zeros_like(moving_mask_aff, dtype=bool)
+            for z in range(moving_mask_aff.shape[0]):
+                moving_mask_final[z] = _resample_2d(moving_mask_aff[z].astype(np.float32), tx_nr, sitk.sitkNearestNeighbor) > 0.5
+        else:
+            out = out_aff
+            moving_mask_final = moving_mask_aff
+    else:
+        out = out_aff
+        moving_mask_final = moving_mask_aff
+
+    # Cast back
     if np.issubdtype(orig_dtype, np.integer):
         info = np.iinfo(orig_dtype)
         registered = np.clip(np.rint(out), info.min, info.max).astype(orig_dtype)
     else:
         registered = out.astype(orig_dtype, copy=False)
 
-    # Final Dice error QC
+    # Final Dice error (full volume)
     inter = np.count_nonzero(fixed_for_reg & moving_mask_final)
     na = np.count_nonzero(fixed_for_reg)
     nb = np.count_nonzero(moving_mask_final)
