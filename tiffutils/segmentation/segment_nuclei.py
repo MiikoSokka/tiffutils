@@ -20,6 +20,10 @@ from ..processing import histogram_stretch
 from skimage.measure import block_reduce, regionprops, label as cc_label
 from skimage.morphology import remove_small_objects
 
+from ..io.logging_utils import get_logger, Timer
+
+LOG = get_logger(__name__)
+
 def segment_nuclei_cpsam_3d(
     vol: np.ndarray,
     downsample_factor: int | None = 20,
@@ -33,10 +37,11 @@ def segment_nuclei_cpsam_3d(
     flow3D_smooth: float | None = 1.6,
     cellprob_threshold: float | None =2.0,
     flow_threshold: float | None =0.4,
-) -> np.ndarray:
+    ) -> np.ndarray:
     """
     Segment nuclei in a 3D volume using Cellpose-SAM (cpsam) with 3D mode.
     """
+    t = Timer()
 
     # --- lazy import so that importing this module doesn't require cellpose ---
     if model is None:
@@ -44,11 +49,10 @@ def segment_nuclei_cpsam_3d(
             from cellpose import models
         except ImportError as e:
             raise ImportError(
-                "segment_nuclei_cpsam_3d requires `cellpose` to be installed.\n"
-                "Install it in the environment where you run segmentation."
+                LOG.error("segment_nuclei_cpsam_3d requires `cellpose` to be installed. Install it in the environment where you run segmentation.")
             ) from e
         if verbose:
-            print("[segment_nuclei_cpsam_3d] Creating Cellpose-SAM cpsam model...")
+            LOG.info("step=creating cpsam model")
         model = models.CellposeModel(gpu=gpu)
 
     # Handle input shape
@@ -59,7 +63,8 @@ def segment_nuclei_cpsam_3d(
         # Z, C, Y, X -> take first channel
         img_zyx = vol[:, 0, ...]
     else:
-        raise ValueError(f"Expected vol with ndim 3 or 4 (ZYX or ZCYX), got shape {vol.shape}")
+        raise ValueError(
+            LOG.error("Expected vol with ndim 3 or 4 (ZYX or ZCYX), got shape %s", vol.shape))
 
     # Ensure we have a copy in float32
     img_zyx = np.asarray(img_zyx, dtype=np.float32)
@@ -85,7 +90,7 @@ def segment_nuclei_cpsam_3d(
 
     Z, Y, X = img_zyx.shape
     if verbose:
-        print(f"[segment_nuclei_cpsam_3d] Input volume: {img_zyx.shape}, dtype={img_zyx.dtype}")
+        LOG.info("step shape= %s, dtype=%s", img_zyx.shape, img_zyx.dtype)
 
     # ----------------------------------------------------------------------
     # Downsampling configuration
@@ -95,10 +100,9 @@ def segment_nuclei_cpsam_3d(
 
     if do_downsample:
         if verbose:
-            print(
-                f"[segment_nuclei_cpsam_3d] Downsampling XY by factor {downsample_factor}: "
-                f"{Y}x{X} -> {Y // downsample_factor}x{X // downsample_factor}"
-            )
+            LOG.info(
+                "downsampling XY by factor %s", downsample_factor
+                )
         img_ds = block_reduce(
             img_zyx,
             block_size=(1, downsample_factor, downsample_factor),
@@ -107,7 +111,7 @@ def segment_nuclei_cpsam_3d(
     else:
         img_ds = img_zyx
         if verbose:
-            print("[segment_nuclei_cpsam_3d] Downsample disabled — using full resolution.")
+            LOG.info("downsample disabled — using full resolution.")
 
     # ----------------------------------------------------------------------
     # Rescale diameter, anisotropy, and min_size to match the working image
@@ -137,25 +141,24 @@ def segment_nuclei_cpsam_3d(
         min_size_eff = 0
 
     if verbose:
-        print("[segment_nuclei_cpsam_3d] Effective parameters for Cellpose-SAM:")
-        print(f"    diameter (full-res): {diameter}")
-        print(f"    diameter (working):  {diameter_eff}")
-        print(f"    anisotropy (full-res): {anisotropy}")
-        print(f"    anisotropy (working):  {anisotropy_eff}")
-        print(f"    min_size (full-res): {min_size}")
-        print(f"    min_size (working):  {min_size_eff}")
+        LOG.info("effective parameters: diameter (full-res)=%s diameter (working)=%s anisotropy (full-res)=%s anisotropy (working)=%s min_size (full-res)=%s min_size (working)=%s",
+            diameter,
+            diameter_eff,
+            anisotropy,
+            anisotropy_eff,
+            min_size,
+            min_size_eff,)
 
     if diameter_eff is not None and diameter_eff < 3 and verbose:
-        print(
-            "[segment_nuclei_cpsam_3d] WARNING: effective diameter < 3 pixels at working scale. "
-            "Cellpose performance may be poor; consider smaller downsample_factor or larger diameter."
+        LOG.warning(
+            "effective diameter < 3 pixels at working scale. Cellpose performance may be poor; consider smaller downsample_factor or larger diameter."
         )
 
     # ----------------------------------------------------------------------
     # Run Cellpose-SAM 3D
     # ----------------------------------------------------------------------
     if verbose:
-        print("[segment_nuclei_cpsam_3d] Running 3D Cellpose-SAM segmentation...")
+        LOG.info("running cellpose 3D-sam")
 
     masks_ds, flows, styles = model.eval(
         img_ds,
@@ -177,13 +180,6 @@ def segment_nuclei_cpsam_3d(
     # Upsample only if downsampling was applied
     if do_downsample:
         Y_ds, X_ds = masks_ds.shape[1:]
-        if verbose:
-            print(
-                f"[segment_nuclei_cpsam_3d] Upsampling masks back to original XY "
-                f"via repeat({downsample_factor}): {Y_ds}x{X_ds} -> "
-                f"{Y_ds * downsample_factor}x{X_ds * downsample_factor}"
-            )
-
         masks_up = np.repeat(
             np.repeat(masks_ds, downsample_factor, axis=1),
             downsample_factor,
@@ -196,7 +192,7 @@ def segment_nuclei_cpsam_3d(
     masks_zyx = masks_zyx.astype(np.int32, copy=False)
 
     if verbose:
-        print(f"[segment_nuclei_cpsam_3d] Output masks shape: {masks_zyx.shape}, dtype={masks_zyx.dtype}")
+        LOG.info("output masks shape %s, dtype %s", masks_zyx.shape, masks_zyx.dtype)
 
     return masks_zyx
 

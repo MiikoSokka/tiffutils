@@ -1,6 +1,16 @@
 # tiffutils/__init__.py
 from __future__ import annotations
 
+from .io.logging_utils import (
+    DEFAULT_FMT,
+    DEFAULT_DATEFMT,
+    get_logger,
+    level_from_verbose,
+    setup_root_logging,
+    ContextLogger,
+    Timer,
+)
+
 from ._api import (
     get_filenames,
     match_filenames,
@@ -52,6 +62,13 @@ __all__ = [
     "stack_single_file",
     "segmentMetaphaseChromosomes",
     "segmentChromosomeTerritories",
+    "DEFAULT_FMT",
+    "DEFAULT_DATEFMT",
+    "get_logger",
+    "level_from_verbose",
+    "setup_root_logging",
+    "ContextLogger",
+    "Timer",
 ]
 
 ##### Old init:

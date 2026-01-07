@@ -13,7 +13,8 @@ from skimage.segmentation import watershed
 from skimage.measure import label, regionprops
 from scipy.ndimage import distance_transform_edt, binary_dilation
 
-from tiffutils.io.logging_utils import get_logger, Timer
+from ..io.logging_utils import get_logger, Timer
+
 LOG = get_logger(__name__)
 
 def find_centroids(
@@ -23,7 +24,6 @@ def find_centroids(
     sphere_diameter=6,
     gaussian_smoothing_sigma=1,
 ):
-    
     """
     Full pipeline:
       1) Normalize 3D array
@@ -52,54 +52,69 @@ def find_centroids(
     centroids_3d : np.ndarray
         Array of centroids, shape (N, 3) with (z, y, x) coordinates (float).
     """
+    if array_3D.ndim != 3:
+        raise ValueError(
+            LOG.error("array_3D must be 3D (Z, Y, X). Got shape %s", array_3D.shape)
+        )
 
     t = Timer()
-    LOG.info("start shape=%s s3 param=%s", array_3D.shape, s3_param)
+    LOG.info(
+        "start step=find_centroids shape=%s dtype=%s gaussian_sigma=%.3g minArea=%d sphere_diameter=%s s3_param=%s",
+        array_3D.shape,
+        array_3D.dtype,
+        float(gaussian_smoothing_sigma),
+        int(minArea),
+        sphere_diameter,
+        s3_param,
+    )
 
-    if array_3D.ndim != 3:
-        raise ValueError(f"array_3D must be 3D (Z, Y, X). Got shape {array_3D.shape}")
-
-    print("Detect features...")
-
+    # ------------------------------------------------------------------
     # 1) Normalize
-    array_3D_normalized = tiffu.convert_dtype(tiffu.histogram_stretch(
-        array_3D,
-        intensity_scaling_param=[1, 99.99]
-    ), 'float32'
-                                             )
+    # ------------------------------------------------------------------
+    array_3D_normalized = tiffu.convert_dtype(
+        tiffu.histogram_stretch(array_3D, intensity_scaling_param=[1, 99.99]),
+        "float32",
+    )
 
     # Optional Gaussian smoothing (slice-by-slice)
     array_3D_smooth = image_smoothing_gaussian_slice_by_slice(
         array_3D_normalized,
         sigma=gaussian_smoothing_sigma,
     )
-    
+
+    # ------------------------------------------------------------------
     # 2) Segment dots
-    print("Segment dots...")
-    print(f"\tS3 param {s3_param}")
-
-    # Segmentation from your custom 3D dot detector
-    bw = dot_3d_wrapper(array_3D_smooth, s3_param)  # expected to be mask-like
-
-    # Ensure boolean
+    # ------------------------------------------------------------------
+    LOG.debug("step=dot_3d_wrapper s3_param=%s", s3_param)
+    bw = dot_3d_wrapper(array_3D_smooth, s3_param)
     bw = bw > 0
 
-    # Remove small objects
-    mask = remove_small_objects(bw, max_size=minArea, connectivity=1)
+    mask = remove_small_objects(bw, max_size=int(minArea), connectivity=1)
 
-    # If nothing remains, return early with empty results
     if not mask.any():
-        print("No objects found after size filtering; returning empty results.")
+        LOG.warning(
+            "step=size_filter no_objects_after_filter minArea=%d bw_nonzero=%d",
+            int(minArea),
+            int(np.count_nonzero(bw)),
+        )
         centroids_3d = np.zeros((0, 3), dtype=float)
-        centroids_mask = np.zeros_like(mask, dtype=bool)        
+        centroids_mask = np.zeros_like(mask, dtype=bool)
+        LOG.info("done step=find_centroids n_centroids=0 time_s=%.3f", t.s())
         return centroids_mask, centroids_3d
 
-    # Seeds for watershed
+    # ------------------------------------------------------------------
+    # Watershed separation
+    # ------------------------------------------------------------------
     seeds = dilation(
         peak_local_max_wrapper(array_3D_smooth, label(mask))
     )
 
-    # Watershed on distance transform of bw
+    if not seeds.any():
+        LOG.warning(
+            "step=seeds no_seeds_found mask_nonzero=%d",
+            int(np.count_nonzero(mask)),
+        )
+
     watershed_map = -distance_transform_edt(bw)
     labels_ws = watershed(
         watershed_map,
@@ -108,45 +123,55 @@ def find_centroids(
         watershed_line=True,
     )
 
-    # Final binary mask and re-label for clean connected components
     final_mask = labels_ws > 0
     labeled_mask = label(final_mask)
 
+    # ------------------------------------------------------------------
     # 3) Define centroids
-    print("Define centroids...")
+    # ------------------------------------------------------------------
     props = regionprops(labeled_mask)
 
     if not props:
-        print("No labeled regions found; returning empty results.")
+        LOG.warning("step=regionprops no_regions_found")
         centroids_3d = np.zeros((0, 3), dtype=float)
         centroids_mask = np.zeros_like(final_mask, dtype=bool)
+        LOG.info("done step=find_centroids n_centroids=0 time_s=%.3f", t.s())
         return centroids_mask, centroids_3d
 
-    centroids_3d = np.array([p.centroid for p in props], dtype=float)  # (N, 3)
+    centroids_3d = np.array([p.centroid for p in props], dtype=float)
+    n_centroids = int(centroids_3d.shape[0])
 
-    # 4) Convert centroids to a boolean sphere mask
-    print("Convert centroids into boolean image array...")
+    LOG.info(
+        "step=centroids n_centroids=%d labels=%d",
+        n_centroids,
+        int(labeled_mask.max()),
+    )
+
+    # ------------------------------------------------------------------
+    # 4) Convert centroids to boolean sphere mask
+    # ------------------------------------------------------------------
     shape = final_mask.shape
     points = np.zeros(shape, dtype=bool)
 
-    # Mark centroid voxels
     for zf, yf, xf in centroids_3d:
         z, y, x = np.round([zf, yf, xf]).astype(int)
         if 0 <= z < shape[0] and 0 <= y < shape[1] and 0 <= x < shape[2]:
             points[z, y, x] = True
 
-    # Sphere dilation around centroids
     if sphere_diameter is None or sphere_diameter <= 1:
-        # No dilation, just single voxels
         centroids_mask = points
+        radius = 0
     else:
-        radius = max(1, sphere_diameter // 2)
-        selem = ball(radius)
-        centroids_mask = binary_dilation(points, selem)
-    
-    LOG.info("done n=%d time_s=%.3f", n, t.s())
-    
-    # centroids_mask is bool, ideal for phase_cross_correlation
+        radius = max(1, int(sphere_diameter) // 2)
+        centroids_mask = binary_dilation(points, ball(radius))
+
+    LOG.info(
+        "done step=find_centroids n_centroids=%d radius=%d time_s=%.3f",
+        n_centroids,
+        int(radius),
+        t.s(),
+    )
+
     return centroids_mask, centroids_3d
 
 
@@ -156,6 +181,9 @@ from scipy.ndimage import shift as nd_shift
 from scipy.spatial import cKDTree
 from skimage.feature import match_template
 from skimage.transform import warp
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def _center_crop_xy(vol_zyx: np.ndarray, size: int):
@@ -369,7 +397,7 @@ def _try_sitk_affine_2d(fixed_2d: np.ndarray, moving_2d: np.ndarray, n_iter: int
     try:
         import SimpleITK as sitk
     except ImportError:
-        print("SimpleITK not available: skipping affine and returning rigid-only.", flush=True)
+        LOG.warning("SimpleITK not available: skipping affine and returning rigid-only.")
         return None, False
 
     fixed = sitk.GetImageFromArray(fixed_2d.astype(np.float32))
@@ -406,7 +434,7 @@ def _try_sitk_bspline_2d(fixed_2d: np.ndarray, moving_2d: np.ndarray, mesh_size=
     try:
         import SimpleITK as sitk
     except ImportError:
-        print("SimpleITK not available: skipping smooth nonrigid refinement.", flush=True)
+        LOG.warning("SimpleITK not available: skipping smooth nonrigid refinement.")
         return None, False
 
     fixed = sitk.GetImageFromArray(fixed_2d.astype(np.float32))
@@ -427,7 +455,6 @@ def _try_sitk_bspline_2d(fixed_2d: np.ndarray, moving_2d: np.ndarray, mesh_size=
         costFunctionConvergenceFactor=1e+7,
     )
 
-    # Coarse-to-fine, but still very smooth
     reg.SetShrinkFactorsPerLevel([4, 2, 1])
     reg.SetSmoothingSigmasPerLevel([2.0, 1.0, 0.0])
     reg.SmoothingSigmasAreSpecifiedInPhysicalUnitsOff()
@@ -459,7 +486,7 @@ def register_3d_stack(
            - NCC template match moving_crop_2d within fixed_2d
            - Convert match position -> (dy,dx)
            - Compute Dice error ONLY over the matched region
-           - PRINT Dice error each iteration
+           - LOG Dice error each iteration
            - STOP EARLY once crop_dice_error <= threshold
       3) Apply that shift to FULL moving_original.
       4) Global 2D affine registration (SimpleITK) on masks; apply slice-by-slice to FULL moving_original.
@@ -475,7 +502,6 @@ def register_3d_stack(
     error : float
         Final Dice error after the applied transforms (full volume).
     """
-    # --- Prepare ZYX boolean volumes ---
     if fixed_centroids.ndim == 4:
         fixed_for_reg = fixed_centroids.any(axis=1)
         moving_for_reg = moving_centroids.any(axis=1)
@@ -486,7 +512,6 @@ def register_3d_stack(
     orig_dtype = moving_original.dtype
     Z, Y, X = fixed_for_reg.shape
 
-    # --- (1) dz from Z profiles ---
     dz0 = _estimate_dz_from_z_profiles(fixed_for_reg, moving_for_reg)
 
     fixed_2d = fixed_for_reg.any(axis=0).astype(np.float32)
@@ -503,20 +528,18 @@ def register_3d_stack(
 
         templ_2d = moving_crop_zyx.any(axis=0).astype(np.float32)
         if np.count_nonzero(templ_2d) == 0:
-            print(
-                f"[normxcorr] size={size:4d} crop(y={y0}:{y1}, x={x0}:{x1}) "
-                f"template_empty -> skip (crop_dice_error=inf)",
-                flush=True,
+            LOG.info(
+                "[normxcorr] size=%4d crop(y=%d:%d, x=%d:%d) template_empty -> skip (crop_dice_error=inf)",
+                size, y0, y1, x0, x1,
             )
             size -= int(central_step)
             continue
 
         y_peak, x_peak, score = _normxcorr_match_location(fixed_2d, templ_2d)
         if y_peak is None:
-            print(
-                f"[normxcorr] size={size:4d} crop(y={y0}:{y1}, x={x0}:{x1}) "
-                f"template_larger_than_fixed -> skip (crop_dice_error=inf)",
-                flush=True,
+            LOG.info(
+                "[normxcorr] size=%4d crop(y=%d:%d, x=%d:%d) template_larger_than_fixed -> skip (crop_dice_error=inf)",
+                size, y0, y1, x0, x1,
             )
             size -= int(central_step)
             continue
@@ -528,14 +551,12 @@ def register_3d_stack(
         region = (y_peak, x_peak, h, w)
         crop_err = _dice_error_region_after_shift(fixed_for_reg, moving_for_reg, shift_vec, region)
 
-        print(
-            f"[normxcorr] size={size:4d} crop(y={y0}:{y1}, x={x0}:{x1}) "
-            f"match(top-left)=(y={y_peak},x={x_peak}) score={score:.4f} "
-            f"shift(dz,dy,dx)=({dz0:.2f},{dy:.2f},{dx:.2f}) crop_dice_error={crop_err:.4f}",
-            flush=True,
+        LOG.info(
+            "[normxcorr] size=%4d crop(y=%d:%d, x=%d:%d) match(top-left)=(y=%d,x=%d) score=%.4f "
+            "shift(dz,dy,dx)=(%.2f,%.2f,%.2f) crop_dice_error=%.4f",
+            size, y0, y1, x0, x1, y_peak, x_peak, score, dz0, dy, dx, crop_err,
         )
 
-        # Use the first accepted shift (as requested)
         best_shift = shift_vec
         best_crop_err = crop_err
 
@@ -547,19 +568,16 @@ def register_3d_stack(
 
     dz, dy, dx = map(float, best_shift)
     if accepted:
-        print(
-            f"[normxcorr] ACCEPTED: shift(dz,dy,dx)=({dz:.2f},{dy:.2f},{dx:.2f}) "
-            f"crop_dice_error={best_crop_err:.4f} <= {float(dice_threshold):.3f}",
-            flush=True,
+        LOG.info(
+            "[normxcorr] ACCEPTED: shift(dz,dy,dx)=(%.2f,%.2f,%.2f) crop_dice_error=%.4f <= %.3f",
+            dz, dy, dx, best_crop_err, float(dice_threshold),
         )
     else:
-        print(
-            f"[normxcorr] NOT ACCEPTED: using last tried shift(dz,dy,dx)=({dz:.2f},{dy:.2f},{dx:.2f}) "
-            f"crop_dice_error={best_crop_err:.4f} (threshold={float(dice_threshold):.3f})",
-            flush=True,
+        LOG.info(
+            "[normxcorr] NOT ACCEPTED: using last tried shift(dz,dy,dx)=(%.2f,%.2f,%.2f) crop_dice_error=%.4f (threshold=%.3f)",
+            dz, dy, dx, best_crop_err, float(dice_threshold),
         )
 
-    # --- Apply rigid shift to FULL moving_original ---
     shift_full = (dz, dy, dx) if moving_original.ndim == 3 else (dz, 0.0, dy, dx)
     rigid_shifted = nd_shift(
         moving_original,
@@ -569,10 +587,8 @@ def register_3d_stack(
         cval=0.0,
     )
 
-    # shifted masks for affine estimation + QC
     _, moving_shifted_mask = _dice_error(fixed_for_reg, moving_for_reg, best_shift)
 
-    # --- (4) Global affine registration (2D) ---
     fixed_aff_2d = fixed_for_reg.any(axis=0).astype(np.float32)
     moving_aff_2d = moving_shifted_mask.any(axis=0).astype(np.float32)
 
@@ -587,7 +603,6 @@ def register_3d_stack(
             res = sitk.Resample(mov, ref, tx, interp, 0.0, sitk.sitkFloat32)
             return sitk.GetArrayFromImage(res)
 
-        # apply affine to moving_original (rigid shifted)
         if rigid_shifted.ndim == 3:
             out_aff = np.empty_like(rigid_shifted, dtype=np.float32)
             for z in range(rigid_shifted.shape[0]):
@@ -598,15 +613,17 @@ def register_3d_stack(
                 for c in range(rigid_shifted.shape[1]):
                     out_aff[z, c] = _resample_2d(rigid_shifted[z, c], tx_aff, sitk.sitkLinear)
 
-        # apply affine to mask
         moving_mask_aff = np.zeros_like(moving_shifted_mask, dtype=bool)
         for z in range(moving_shifted_mask.shape[0]):
-            moving_mask_aff[z] = _resample_2d(moving_shifted_mask[z].astype(np.float32), tx_aff, sitk.sitkNearestNeighbor) > 0.5
+            moving_mask_aff[z] = _resample_2d(
+                moving_shifted_mask[z].astype(np.float32),
+                tx_aff,
+                sitk.sitkNearestNeighbor,
+            ) > 0.5
     else:
         out_aff = rigid_shifted.astype(np.float32, copy=False)
         moving_mask_aff = moving_shifted_mask
 
-    # --- (5) VERY SMOOTH nonrigid refinement, ONLY when crop was accepted ---
     if accepted and ok_aff:
         fixed_nr_2d = fixed_for_reg.any(axis=0).astype(np.float32)
         moving_nr_2d = moving_mask_aff.any(axis=0).astype(np.float32)
@@ -627,12 +644,11 @@ def register_3d_stack(
                 res = sitk.Resample(mov, ref, tx, interp, 0.0, sitk.sitkFloat32)
                 return sitk.GetArrayFromImage(res)
 
-            print(
-                f"[smooth-nonrigid] running coarse B-spline refinement mesh={smooth_bspline_mesh_size} iters={smooth_bspline_iters}",
-                flush=True,
+            LOG.info(
+                "[smooth-nonrigid] running coarse B-spline refinement mesh=%s iters=%d",
+                str(smooth_bspline_mesh_size), int(smooth_bspline_iters),
             )
 
-            # apply B-spline to affine output
             if out_aff.ndim == 3:
                 out = np.empty_like(out_aff, dtype=np.float32)
                 for z in range(out_aff.shape[0]):
@@ -643,10 +659,13 @@ def register_3d_stack(
                     for c in range(out_aff.shape[1]):
                         out[z, c] = _resample_2d(out_aff[z, c], tx_nr, sitk.sitkLinear)
 
-            # apply B-spline to mask for final QC
             moving_mask_final = np.zeros_like(moving_mask_aff, dtype=bool)
             for z in range(moving_mask_aff.shape[0]):
-                moving_mask_final[z] = _resample_2d(moving_mask_aff[z].astype(np.float32), tx_nr, sitk.sitkNearestNeighbor) > 0.5
+                moving_mask_final[z] = _resample_2d(
+                    moving_mask_aff[z].astype(np.float32),
+                    tx_nr,
+                    sitk.sitkNearestNeighbor,
+                ) > 0.5
         else:
             out = out_aff
             moving_mask_final = moving_mask_aff
@@ -654,14 +673,12 @@ def register_3d_stack(
         out = out_aff
         moving_mask_final = moving_mask_aff
 
-    # Cast back
     if np.issubdtype(orig_dtype, np.integer):
         info = np.iinfo(orig_dtype)
         registered = np.clip(np.rint(out), info.min, info.max).astype(orig_dtype)
     else:
         registered = out.astype(orig_dtype, copy=False)
 
-    # Final Dice error (full volume)
     inter = np.count_nonzero(fixed_for_reg & moving_mask_final)
     na = np.count_nonzero(fixed_for_reg)
     nb = np.count_nonzero(moving_mask_final)
@@ -671,4 +688,5 @@ def register_3d_stack(
         dice = (2.0 * inter) / (na + nb)
     final_error = 1.0 - float(dice)
 
+    LOG.info("done step=error=%.4f", final_error)
     return registered, np.asarray([dz, dy, dx], dtype=np.float32), float(final_error)

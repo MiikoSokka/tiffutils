@@ -4,6 +4,8 @@
 import os
 import numpy as np
 import tifffile as tiff
+from .logging_utils import get_logger, Timer
+LOG = get_logger(__name__)
 
 def load_tiff(path_to_file, filenames=False, expected_channels=4):
     """
@@ -39,35 +41,33 @@ def load_tiff(path_to_file, filenames=False, expected_channels=4):
     filename = os.path.basename(path_to_file)
 
     try:
-        array = tiff.imread(path_to_file, is_ome=False)
+        array_original = tiff.imread(path_to_file, is_ome=False)
     except Exception as e:
-        print(f"Error loading {filename}: {e}. NOTE! A 4D (Z,C,Y,X or ZC,Y,X) TIFF stack is expected.")
+        LOG.error(
+            "Error loading %s: %s. NOTE! A 4D (Z,C,Y,X or ZC,Y,X) TIFF stack is expected.", filename, e,
+            )
         return None, None
 
-    print(f"Loading {filename} with shape {array.shape} and dtype {array.dtype}")
+    array = array_original
 
     # Handle 3D TIFFs (ZC, Y, X)
     if expected_channels == 4 and len(array.shape) == 3:
         zc, y, x = array.shape
-        print('\tReshaping', filename, '\t', array.shape)
         z = zc // expected_channels
         array = array.reshape(z, expected_channels, y, x)
-        print('\tShape after reshaping:', array.shape)
 
     # Add missing channels if needed
     if array.shape[1] < expected_channels:
         missing_channels = expected_channels - array.shape[1]
-        print(f'\tFile {filename} has fewer channels than {expected_channels}. '
-              f'\tAdding {missing_channels} empty array(s)...')
+        # print(f'\tFile {filename} has fewer channels than {expected_channels}. '
+        #       f'\tAdding {missing_channels} empty array(s)...')
         z, _, y, x = array.shape
-        empty_channels = np.full((z, missing_channels, y, x), 65536, dtype=array.dtype)
+        empty_channels = np.full((z, missing_channels, y, x), 65535, dtype=array.dtype)
         array = np.concatenate((array, empty_channels), axis=1)
+    
+    LOG.info("Loaded filename %s with shape %s (original shape %s)", filename, array.shape, array_original.shape)
 
     if filenames:
         return array, filename
     else:
         return array
-
-
-def rearrange_for_montage():
-    pass

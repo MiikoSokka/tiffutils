@@ -2,6 +2,8 @@
 # Author: Miiko Sokka
 
 import numpy as np
+from ..io.logging_utils import get_logger, Timer
+LOG = get_logger(__name__)
 
 def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=False):
     """
@@ -29,7 +31,7 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
     - For [0, 1] normalization, use tiffutils.processing.dtype(array, dtype=float32)
     """
 
-    print("Running histogram_stretch ... ")
+    # print("Running histogram_stretch ... ")
 
     p_lower, p_upper = intensity_scaling_param
 
@@ -39,7 +41,7 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
     arr_dtype = input_array.dtype
 
     if input_array.ndim == 2:
-        print(f'\tHistogram stretching a 2D array of shape {input_array.shape}')
+        # print(f'\tHistogram stretching a 2D array of shape {input_array.shape}')
         # 2D: Y, X
         p1 = np.percentile(input_array, p_lower)
         p99 = np.percentile(input_array, p_upper)
@@ -53,10 +55,13 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
 
         clipped = np.clip(input_array, p1, p99)
         stretched = ((clipped - p1) / (p99 - p1)) * (np.iinfo(arr_dtype).max if np.issubdtype(arr_dtype, np.integer) else 1.0)
+
+        LOG.info("Histogram stretch done using percentile range %s", intensity_scaling_param)
+
         return stretched.astype(arr_dtype)
 
     elif input_array.ndim == 3:
-        print(f'Histogram stretching a 3D array of shape {input_array.shape}')
+        # print(f'Histogram stretching a 3D array of shape {input_array.shape}')
         # 3D: Z, Y, X
         p1 = np.percentile(input_array, p_lower)
         p99 = np.percentile(input_array, p_upper)
@@ -70,10 +75,13 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
 
         clipped = np.clip(input_array, p1, p99)
         stretched = ((clipped - p1) / (p99 - p1)) * (np.iinfo(arr_dtype).max if np.issubdtype(arr_dtype, np.integer) else 1.0)
+
+        LOG.info("Histogram stretch done using percentile range %s", intensity_scaling_param)
+
         return stretched.astype(arr_dtype)
 
     elif input_array.ndim == 4:
-        print(f'Histogram stretching a 4D array of shape {input_array.shape}')
+        # print(f'Histogram stretching a 4D array of shape {input_array.shape}')
         # 4D: Z, C, Y, X
         Z, C, Y, X = input_array.shape
         stretched = np.empty_like(input_array)
@@ -95,11 +103,13 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
                     np.iinfo(arr_dtype).max if np.issubdtype(arr_dtype, np.integer) else 1.0
                 )
                 stretched[:, c, :, :] = scaled.astype(arr_dtype)
-
+        
+        LOG.info("Histogram stretch done using percentile range %s", intensity_scaling_param)
+        
         return stretched
 
     elif input_array.ndim == 5:
-        print(f'Histogram stretching a 5D array of shape {input_array.shape}')
+        # print(f'Histogram stretching a 5D array of shape {input_array.shape}')
         # 5D: T, Z, C, Y, X
         T, Z, C, Y, X = input_array.shape
         stretched = np.empty_like(input_array)
@@ -123,8 +133,10 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
                     )
                     stretched[t, :, c, :, :] = scaled.astype(arr_dtype)
 
+        LOG.info("Histogram stretch done using percentile range %s", intensity_scaling_param)
+        
         return stretched
 
     else:
-        print(f"\tUnsupported array with shape {input_array.shape}. Skipping.")
+        LOG.warning("Unsupported array with shape %s. Skipping.", input_array.shape)
         return input_array.copy()
