@@ -2,9 +2,11 @@
 # Author: Miiko Sokka
 
 import os
+
 import numpy as np
 import tifffile as tiff
-from .logging_utils import get_logger, Timer
+
+from .logging_utils import Timer, get_logger, setup_root_logging
 LOG = get_logger(__name__)
 
 def load_tiff(path_to_file, filenames=False, expected_channels=4):
@@ -38,14 +40,19 @@ def load_tiff(path_to_file, filenames=False, expected_channels=4):
     - Prints the shape changes and final dtype of the array.
     """
 
+    t_total = Timer()
     filename = os.path.basename(path_to_file)
 
+    LOG.debug("start step=load_tiff file=%s filenames=%s expected_channels=%s", filename, filenames, expected_channels)
+    
     try:
         array_original = tiff.imread(path_to_file, is_ome=False)
-    except Exception as e:
-        LOG.error(
-            "Error loading %s: %s. NOTE! A 4D (Z,C,Y,X or ZC,Y,X) TIFF stack is expected.", filename, e,
-            )
+    except Exception:
+        LOG.exception(
+            "Error loading file=%s. NOTE! A 4D (Z,C,Y,X or ZC,Y,X) TIFF stack is expected."
+            "To load generic tiff file, use tifffile.imread(array, is_ome=False)",
+            filename,
+        )
         return None, None
 
     array = array_original
@@ -55,6 +62,7 @@ def load_tiff(path_to_file, filenames=False, expected_channels=4):
         zc, y, x = array.shape
         z = zc // expected_channels
         array = array.reshape(z, expected_channels, y, x)
+        LOG.debug("step=load_tiff reshaped ZC->ZCYX file=%s zc=%d z=%d c=%d", filename, zc, z, expected_channels)
 
     # Add missing channels if needed
     if array.shape[1] < expected_channels:
@@ -64,8 +72,17 @@ def load_tiff(path_to_file, filenames=False, expected_channels=4):
         z, _, y, x = array.shape
         empty_channels = np.full((z, missing_channels, y, x), 65535, dtype=array.dtype)
         array = np.concatenate((array, empty_channels), axis=1)
+        LOG.debug("step=load_tiff padded channels file=%s missing_channels=%d fill_value=%d", filename, missing_channels, 65535)
     
-    LOG.info("Loaded filename %s with shape %s (original shape %s)", filename, array.shape, array_original.shape)
+    LOG.debug(
+        "done step=load_tiff file=%s shape=%s dtype=%s (original_shape=%s) expected_channels=%d time_s=%.3f",
+        filename,
+        array.shape,
+        array.dtype,
+        array_original.shape,
+        expected_channels,
+        t_total.s(),
+    )
 
     if filenames:
         return array, filename

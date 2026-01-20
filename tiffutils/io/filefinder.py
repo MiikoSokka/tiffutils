@@ -3,7 +3,14 @@
 
 import os
 import re
+import subprocess
+from typing import List, Tuple, Union
+
 from natsort import natsorted
+
+from .logging_utils import get_logger, Timer, setup_root_logging
+
+LOG = get_logger(__name__)
 
 def get_filenames(input_path, regex=r'.*\.tiff?$', subfolders=False):
     """
@@ -23,6 +30,8 @@ def get_filenames(input_path, regex=r'.*\.tiff?$', subfolders=False):
     - ValueError: If subfolders=True and no subdirectories are found.
     """
 
+    t = Timer()
+
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Directory not found: {input_path}")
 
@@ -33,7 +42,16 @@ def get_filenames(input_path, regex=r'.*\.tiff?$', subfolders=False):
                re.search(regex, file) and
                not file.startswith('._')
         ]
-        return natsorted(filenamelist)
+        out = natsorted(filenamelist)
+        LOG.debug(
+            "done step=get_filenames path=%s subfolders=%s regex=%s n_files=%d time_s=%.3f",
+            input_path,
+            subfolders,
+            regex,
+            len(out),
+            t.s(),
+        )
+        return out
     
     # subfolders=True: Check all subdirectories and validate files
     dirs_paths = natsorted([
@@ -52,10 +70,21 @@ def get_filenames(input_path, regex=r'.*\.tiff?$', subfolders=False):
     ]
 
     dirs_paths_bases = [os.path.basename(path) for path in dirs_paths]
-    print(f'All files:\n{all_files}')
-    print(f'All directory paths: {dirs_paths_bases}')
-    
-    return natsorted(all_files), natsorted(dirs_paths_bases)
+
+    files_out = natsorted(all_files)
+    dirs_out = natsorted(dirs_paths_bases)
+
+    LOG.debug(
+        "done step=get_filenames path=%s subfolders=%s regex=%s n_files=%d n_dirs=%d time_s=%.3f",
+        input_path,
+        subfolders,
+        regex,
+        len(files_out),
+        len(dirs_out),
+        t.s(),
+    )
+
+    return files_out, dirs_out
 
 def match_filenames(list1, list2, trim1=None, trim2=None):
     """
@@ -72,6 +101,8 @@ def match_filenames(list1, list2, trim1=None, trim2=None):
       otherwise a tuple of two matched lists.
     """
     
+    t = Timer()
+
     if trim1:
         list1 = [f.replace(trim1, '') for f in list1]
     if trim2:
@@ -84,14 +115,23 @@ def match_filenames(list1, list2, trim1=None, trim2=None):
     matched1 = [f + (trim1 or '') for f in matched]
     matched2 = [f + (trim2 or '') for f in matched]
 
-    # Check if matched1 and matched2 are the same
-    if matched1 == matched2:
-        return natsorted(matched1)  # Return a single list if they are the same
-    else:
-        return natsorted(matched1), natsorted(matched2)  # Return both lists if they differ
+    # NOTE: matched is a set -> order is undefined; always sort before comparing.
+    out1 = natsorted(matched1)
+    out2 = natsorted(matched2)
 
+    LOG.debug(
+        "done step=match_filenames n1=%d n2=%d trim1=%s trim2=%s n_matched=%d time_s=%.3f",
+        len(list1),
+        len(list2),
+        trim1,
+        trim2,
+        len(matched),
+        t.s(),
+    )
 
-import subprocess
+    if out1 == out2:
+        return out1
+    return out1, out2
 
 def get_project_root():
     try:

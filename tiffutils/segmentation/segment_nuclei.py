@@ -33,7 +33,7 @@ def segment_nuclei_cpsam_3d(
     min_size: int = 0,
     model: Any | None = None,
     normalize: bool = True,
-    verbose: bool = True,
+    verbose: bool = False,
     flow3D_smooth: float | None = 1.6,
     cellprob_threshold: float | None =2.0,
     flow_threshold: float | None =0.4,
@@ -43,13 +43,27 @@ def segment_nuclei_cpsam_3d(
     """
     t = Timer()
 
+    if verbose:
+        LOG.info(
+            "segment_nuclei_cpsam_3d start shape=%s dtype=%s downsample_factor=%s diameter=%s gpu=%s anisotropy=%s min_size=%s normalize=%s",
+            getattr(vol, "shape", None),
+            getattr(vol, "dtype", None),
+            downsample_factor,
+            diameter,
+            gpu,
+            anisotropy,
+            min_size,
+            normalize,
+        )
+
     # --- lazy import so that importing this module doesn't require cellpose ---
     if model is None:
         try:
             from cellpose import models
         except ImportError as e:
             raise ImportError(
-                LOG.error("segment_nuclei_cpsam_3d requires `cellpose` to be installed. Install it in the environment where you run segmentation.")
+                "segment_nuclei_cpsam_3d requires `cellpose` to be installed. "
+                "Install it in the environment where you run segmentation."
             ) from e
         if verbose:
             LOG.info("step=creating cpsam model")
@@ -63,8 +77,7 @@ def segment_nuclei_cpsam_3d(
         # Z, C, Y, X -> take first channel
         img_zyx = vol[:, 0, ...]
     else:
-        raise ValueError(
-            LOG.error("Expected vol with ndim 3 or 4 (ZYX or ZCYX), got shape %s", vol.shape))
+        raise ValueError(f"Expected vol with ndim 3 or 4 (ZYX or ZCYX), got shape {vol.shape}")
 
     # Ensure we have a copy in float32
     img_zyx = np.asarray(img_zyx, dtype=np.float32)
@@ -90,7 +103,7 @@ def segment_nuclei_cpsam_3d(
 
     Z, Y, X = img_zyx.shape
     if verbose:
-        LOG.info("step shape= %s, dtype=%s", img_zyx.shape, img_zyx.dtype)
+        LOG.info("normalized shape=%s dtype=%s", img_zyx.shape, img_zyx.dtype)
 
     # ----------------------------------------------------------------------
     # Downsampling configuration
@@ -194,6 +207,11 @@ def segment_nuclei_cpsam_3d(
     if verbose:
         LOG.info("output masks shape %s, dtype %s", masks_zyx.shape, masks_zyx.dtype)
 
+    if verbose:
+        # This is a labeled mask, so count labels rather than voxels.
+        n_labels = int(masks_zyx.max())
+        LOG.info("segment_nuclei_cpsam_3d done n_labels=%s time_s=%.3f", n_labels, t.s())
+
     return masks_zyx
 
 
@@ -211,6 +229,8 @@ def crop_and_save_nuclei_from_mask(
     mask_output_dir: str | Path | None = None,
     margin_xy: int = 5,
     margin_z: int = 1,
+    *,
+    verbose: bool = False,
 ) -> list[tuple[Path, Path | None]]:
     """
     Load a 3D labeled mask and corresponding 3D/4D raw image from disk, crop
@@ -249,8 +269,19 @@ def crop_and_save_nuclei_from_mask(
       `mask_output_dir` is provided.
     """
 
+    t = Timer()
+
     mask_path = Path(mask_path)
     raw_path = Path(raw_path)
+
+    if verbose:
+        LOG.info(
+            "crop_and_save_nuclei_from_mask start mask=%s raw=%s margin_xy=%s margin_z=%s",
+            mask_path,
+            raw_path,
+            margin_xy,
+            margin_z,
+        )
 
     # --- Load arrays from disk ---
     mask_zyx = tiff.imread(mask_path, is_ome=False)
@@ -298,7 +329,10 @@ def crop_and_save_nuclei_from_mask(
     # Base filename from raw (e.g. "r01c01f02")
     base = raw_path.stem
 
+    n_total = 0
+    n_skipped_edge = 0
     for p in props:
+        n_total += 1
         label_id = p.label
 
         # Region bounding box: (z_min, y_min, x_min, z_max, y_max, x_max)
@@ -310,6 +344,7 @@ def crop_and_save_nuclei_from_mask(
             y1_s == Y or x1_s == X
         )
         if touches_edge:
+            n_skipped_edge += 1
             continue
 
         # Apply padding and clamp
@@ -342,6 +377,15 @@ def crop_and_save_nuclei_from_mask(
             save_tiff(crop_mask, mask_out_path)
 
         saved_paths.append((raw_out_path, mask_out_path))
+
+    if verbose:
+        LOG.info(
+            "crop_and_save_nuclei_from_mask done saved=%s total=%s skipped_edge=%s time_s=%.3f",
+            len(saved_paths),
+            n_total,
+            n_skipped_edge,
+            t.s(),
+        )
 
     return saved_paths
 
@@ -378,6 +422,8 @@ def stack_single_file(
     filename: str | Path,
     data_folder: str | Path,
     channel_coding_txt: str | Path,
+    *,
+    verbose: bool = False,
 ) -> tuple[np.ndarray, list[str]]:
     """
     Process a single filename using channel_coding_txt.
@@ -409,9 +455,18 @@ def stack_single_file(
         channel_list : list[str]
             Channel labels, in the same order as the C axis of array_zcyx.
     """
+    t = Timer()
     filename = Path(filename).name  # ensure just the name
     data_folder = Path(data_folder)
     channel_coding_txt = Path(channel_coding_txt)
+
+    if verbose:
+        LOG.info(
+            "stack_single_file start filename=%s data_folder=%s channel_coding_txt=%s",
+            filename,
+            data_folder,
+            channel_coding_txt,
+        )
 
     # ------------------------------------------------------------------
     # 1) Read channel coding table
@@ -550,5 +605,13 @@ def stack_single_file(
     )
     combined_sorted = combined[:, sorted_indices, :, :]
     channels_sorted = [all_channels[i] for i in sorted_indices]
+
+    if verbose:
+        LOG.info(
+            "stack_single_file done shape=%s channels=%s time_s=%.3f",
+            combined_sorted.shape,
+            channels_sorted,
+            t.s(),
+        )
 
     return combined_sorted, channels_sorted

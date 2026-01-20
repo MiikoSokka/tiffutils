@@ -7,6 +7,24 @@ License-Expression: MIT
 Project-URL: Source, https://github.com/yourusername/tiffutils
 Requires-Python: >=3.8
 Description-Content-Type: text/markdown
+Requires-Dist: numpy
+Requires-Dist: scipy
+Requires-Dist: scikit-image
+Requires-Dist: tifffile
+Requires-Dist: natsort
+Provides-Extra: viz
+Requires-Dist: matplotlib; extra == "viz"
+Provides-Extra: opencv
+Requires-Dist: opencv-python; extra == "opencv"
+Provides-Extra: aics
+Requires-Dist: aicssegmentation; extra == "aics"
+Provides-Extra: sitk
+Requires-Dist: SimpleITK; extra == "sitk"
+Provides-Extra: all
+Requires-Dist: matplotlib; extra == "all"
+Requires-Dist: opencv-python; extra == "all"
+Requires-Dist: aicssegmentation; extra == "all"
+Requires-Dist: SimpleITK; extra == "all"
 
 # tiffutils
 

@@ -4,12 +4,16 @@
 import numpy as np
 from scipy.ndimage import zoom
 
+from ..io.logging_utils import get_logger, Timer
+
+LOG = get_logger(__name__)
+
 def resample_z_to_match_xy(
     arr: np.ndarray,
     xy_pixel_size_nm: float = 94.917,
     z_pixel_size_nm: float = 500.039,
     order: int = 1,
-) -> np.ndarray:
+    ) -> np.ndarray:
     """
     Resample the Z axis of a 3D (Z, Y, X) or 4D (Z, C, Y, X) array so that
     the physical spacing in Z matches the XY pixel size, by interpolation.
@@ -32,6 +36,16 @@ def resample_z_to_match_xy(
         Array with the same number of XY pixels (and channels, if present),
         but with Z interpolated to have approximately isotropic voxels.
     """
+    t = Timer()
+
+    LOG.debug(
+        "start step=resample_z_to_match_xy xy_pixel_size_nm=%s z_pixel_size_nm=%s order=%d",
+        xy_pixel_size_nm,
+        z_pixel_size_nm,
+        order,
+        )
+
+
     if arr.ndim not in (3, 4):
         raise ValueError(
             f"Expected a 3D (Z, Y, X) or 4D (Z, C, Y, X) array, got shape {arr.shape}"
@@ -44,6 +58,7 @@ def resample_z_to_match_xy(
     # Example: 500.039 / 94.917 ≈ 5.27 → ~5.27x more Z slices
     z_scale = z_pixel_size_nm / xy_pixel_size_nm
     z_new = int(round(z_orig * z_scale))
+
 
     if z_new <= 0:
         raise ValueError(
@@ -70,5 +85,12 @@ def resample_z_to_match_xy(
         resampled = np.clip(resampled, info.min, info.max).astype(orig_dtype)
     else:
         resampled = resampled.astype(orig_dtype, copy=False)
+
+    LOG.info(
+        "done step=resample_z_to_match_xy shape_in=%s shape_out=%s time_s=%.3f",
+        arr.shape,
+        resampled.shape,
+        t.s(),
+    )
 
     return resampled

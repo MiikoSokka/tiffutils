@@ -2,10 +2,12 @@
 # Author: Miiko Sokka
 
 import numpy as np
+
 from ..io.logging_utils import get_logger, Timer
+
 LOG = get_logger(__name__)
 
-def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=False):
+def histogram_stretch(input_array, intensity_scaling_param=[0, 100]):
     """
     Apply histogram stretching using percentile clipping to a 2D, 3D, 4D, or 5D NumPy array.
 
@@ -31,7 +33,14 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
     - For [0, 1] normalization, use tiffutils.processing.dtype(array, dtype=float32)
     """
 
-    # print("Running histogram_stretch ... ")
+    t = Timer()
+
+    LOG.debug(
+        "start step=histogram_stretch shape=%s dtype=%s intensity_scaling_param=%s",
+        getattr(input_array, "shape", None),
+        getattr(input_array, "dtype", None),
+        intensity_scaling_param,
+    )
 
     p_lower, p_upper = intensity_scaling_param
 
@@ -45,18 +54,19 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
         # 2D: Y, X
         p1 = np.percentile(input_array, p_lower)
         p99 = np.percentile(input_array, p_upper)
-    
-        if verbose:
-            print(f"\tp1={p1}, p99={p99}")
 
         if p99 - p1 < 1e-5:
-            print("\tWarning: Percentile range too small. Skipping normalization.")
+            LOG.warning("step=histogram_stretch percentile_range_too_small -> returning input")
             return input_array.copy()
 
         clipped = np.clip(input_array, p1, p99)
         stretched = ((clipped - p1) / (p99 - p1)) * (np.iinfo(arr_dtype).max if np.issubdtype(arr_dtype, np.integer) else 1.0)
 
-        LOG.info("Histogram stretch done using percentile range %s", intensity_scaling_param)
+        LOG.info(
+            "done step=histogram_stretch ndim=2 intensity_scaling_param=%s time_s=%.3f",
+            intensity_scaling_param,
+            t.s(),
+        )
 
         return stretched.astype(arr_dtype)
 
@@ -66,17 +76,18 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
         p1 = np.percentile(input_array, p_lower)
         p99 = np.percentile(input_array, p_upper)
 
-        if verbose:
-            print(f"\tp1={p1}, p99={p99}")
-
         if p99 - p1 < 1e-5:
-            print("\tWarning: Percentile range too small. Skipping normalization.")
+            LOG.warning("step=histogram_stretch percentile_range_too_small -> returning input")
             return input_array.copy()
 
         clipped = np.clip(input_array, p1, p99)
         stretched = ((clipped - p1) / (p99 - p1)) * (np.iinfo(arr_dtype).max if np.issubdtype(arr_dtype, np.integer) else 1.0)
 
-        LOG.info("Histogram stretch done using percentile range %s", intensity_scaling_param)
+        LOG.info(
+            "done step=histogram_stretch ndim=3 intensity_scaling_param=%s time_s=%.3f",
+            intensity_scaling_param,
+            t.s(),
+        )
 
         return stretched.astype(arr_dtype)
 
@@ -91,11 +102,12 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
             p1 = np.percentile(channel, p_lower)
             p99 = np.percentile(channel, p_upper)
 
-            if verbose:
-                print(f"\tChannel {c}: p1={p1}, p99={p99}")
 
             if p99 - p1 < 1e-5:
-                print(f"\tWarning: Channel {c} percentile range too small. Skipping normalization.")
+                LOG.warning(
+                    "step=histogram_stretch channel=%d percentile_range_too_small -> pass_through",
+                    int(c),
+                )
                 stretched[:, c, :, :] = channel
             else:
                 clipped = np.clip(channel, p1, p99)
@@ -104,7 +116,12 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
                 )
                 stretched[:, c, :, :] = scaled.astype(arr_dtype)
         
-        LOG.info("Histogram stretch done using percentile range %s", intensity_scaling_param)
+        LOG.info(
+            "done step=histogram_stretch ndim=4 channels=%d intensity_scaling_param=%s time_s=%.3f",
+            int(C),
+            intensity_scaling_param,
+            t.s(),
+        )
         
         return stretched
 
@@ -120,11 +137,12 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
                 p1 = np.percentile(subarray, p_lower)
                 p99 = np.percentile(subarray, p_upper)
 
-                if verbose:
-                    print(f"\tTime {t}, Channel {c}: p1={p1}, p99={p99}")
-
                 if p99 - p1 < 1e-5:
-                    print(f"\tWarning: T{t} C{c} percentile range too small. Skipping normalization.")
+                    LOG.warning(
+                        "step=histogram_stretch time=%d channel=%d percentile_range_too_small -> pass_through",
+                        int(t),
+                        int(c),
+                    )
                     stretched[t, :, c, :, :] = subarray
                 else:
                     clipped = np.clip(subarray, p1, p99)
@@ -133,7 +151,13 @@ def histogram_stretch(input_array, intensity_scaling_param=[0, 100], verbose=Fal
                     )
                     stretched[t, :, c, :, :] = scaled.astype(arr_dtype)
 
-        LOG.info("Histogram stretch done using percentile range %s", intensity_scaling_param)
+        LOG.info(
+            "done step=histogram_stretch ndim=5 timepoints=%d channels=%d intensity_scaling_param=%s time_s=%.3f",
+            int(T),
+            int(C),
+            intensity_scaling_param,
+            t.s(),
+        )
         
         return stretched
 
