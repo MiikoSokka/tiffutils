@@ -1,28 +1,41 @@
 # coding: utf-8
 # Author: Miiko Sokka
 
+# from .._optional import optional_import
 import numpy as np
-from .._optional import optional_import
+import matplotlib.pyplot as plt
 
-def show_array(arr, title=None):
+def show_array(*arrays):
     """
-    Display a 2D NumPy array (Y, X) in a Jupyter Notebook.
+    Display 1–4 2D NumPy arrays side by side.
 
     Parameters
     ----------
-    arr : np.ndarray
-        2D array of shape (Y, X)
-    title : str, optional
-        Optional title for the plot
+    *arrays : np.ndarray
+        One to four 2D arrays of shape (Y, X)
     """
-    if arr.ndim != 2:
-        raise ValueError(f"Expected 2D array (Y,X). Got shape: {arr.shape}")
+    if not 1 <= len(arrays) <= 4:
+        raise ValueError(f"Expected 1–4 arrays, got {len(arrays)}")
 
-    plt.figure(figsize=(4,4))
-    plt.imshow(arr, cmap='inferno', interpolation='none',
-           vmin=arr.min(), vmax=arr.max())
-    plt.colorbar()
-    plt.axis('off')
-    if title:
-        plt.title(title)
+    for i, arr in enumerate(arrays):
+        if not isinstance(arr, np.ndarray) or arr.ndim != 2:
+            raise ValueError(
+                f"Array {i} must be a 2D NumPy array, got shape={getattr(arr, 'shape', None)}"
+            )
+
+    n = len(arrays)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4), squeeze=False)
+
+    for ax, arr in zip(axes[0], arrays):
+        im = ax.imshow(
+            arr,
+            cmap="inferno",
+            interpolation="none",
+            vmin=arr.min(),
+            vmax=arr.max(),
+        )
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+        ax.axis("off")
+
+    plt.tight_layout()
     plt.show()

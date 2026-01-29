@@ -196,8 +196,7 @@ def register_3d_stack(
     affine_iters: int = 200,
     smooth_bspline_mesh_size: tuple[int, int] = (8, 8),
     smooth_bspline_iters: int = 120,
-    ):
-
+):
     """
     Updated workflow (coarse->fine, ALWAYS-APPLY refinement):
       Stage 0: full-volume rigid (dz via Z-profiles + XY PCC on 2D projections) -> global Dice (logged)
@@ -401,16 +400,8 @@ def register_3d_stack(
     )
 
     # -------------------------
-    # Stage 2 — Affine
+    # Stage 2 — Affine (ALWAYS-APPLY if it runs)   [order: affine > lens > bspline]
     # -------------------------
-
-    alt_refine_taken = False  # <- used to skip the standard Stage 3/4 below if we run the alt branch
-
-    # snapshot state BEFORE affine, so we can try the alternate ordering from the same baseline
-    pre_aff_reg = current_reg
-    pre_aff_mask = current_mask
-    pre_aff_err = float(current_err)
-
     fixed_aff_2d = fixed_mask.any(axis=0).astype(np.float32)
     moving_aff_2d = current_mask.any(axis=0).astype(np.float32)
 
@@ -427,152 +418,57 @@ def register_3d_stack(
             )
 
         cand_err = _dice_error_from_masks(fixed_mask, cand_mask)
-        aff_accepted = _maybe_accept("stage2_affine", cand_reg, cand_mask, cand_err)
-
-        # ------------------------------------------------------------
-        # Alternate branch only if affine was REJECTED by global Dice:
-        #   lens -> affine -> bspline  (starting from PRE-affine baseline)
-        # ------------------------------------------------------------
-        if not aff_accepted:
-            LOG.debug("stage2_affine rejected; trying alt branch lens>affine>bspline from pre-affine baseline")
-
-            # restore baseline for alternate attempt
-            alt_reg = pre_aff_reg
-            alt_mask = pre_aff_mask
-            alt_err = pre_aff_err
-
-            # (A) Lens first
-            lens_reg, lens_mask, ok_lens = _try_lens_warp(
-                fixed_mask=fixed_mask,
-                moving_reg=alt_reg,
-                moving_mask=alt_mask,
-                match_max_dist=150.0,
-                lens_center_search_px=150,
-                lens_center_step_px=3,
-            )
-            if ok_lens:
-                alt_reg = lens_reg.astype(np.float32, copy=False)
-                alt_mask = lens_mask.astype(bool, copy=False)
-                alt_err = float(_dice_error_from_masks(fixed_mask, alt_mask))
-                LOG.debug("alt_stage3_lens candidate global_err=%.4f (baseline=%.4f)", alt_err, pre_aff_err)
-            else:
-                LOG.debug("alt_stage3_lens ok=0 (skipped/failed)")
-                alt_reg, alt_mask, alt_err = pre_aff_reg, pre_aff_mask, pre_aff_err
-
-            # (B) Affine after lens (only if lens ran successfully)
-            if ok_lens:
-                fixed_aff2_2d = fixed_mask.any(axis=0).astype(np.float32)
-                moving_aff2_2d = alt_mask.any(axis=0).astype(np.float32)
-
-                tx_aff2, ok_aff2 = _try_sitk_affine_2d(
-                    fixed_aff2_2d, moving_aff2_2d, n_iter=int(affine_iters)
-                )
-                if ok_aff2:
-                    cand_reg2 = _apply_sitk_tx_slicewise(alt_reg, tx_aff2, sitk.sitkLinear)
-
-                    cand_mask2 = np.zeros_like(alt_mask, dtype=bool)
-                    for z in range(alt_mask.shape[0]):
-                        cand_mask2[z] = (
-                            _sitk_resample_2d(alt_mask[z].astype(np.float32), tx_aff2, sitk.sitkNearestNeighbor) > 0.5
-                        )
-
-                    cand_err2 = float(_dice_error_from_masks(fixed_mask, cand_mask2))
-                    LOG.debug("alt_stage2_affine candidate global_err=%.4f (after lens=%.4f)", cand_err2, alt_err)
-                    alt_reg, alt_mask, alt_err = cand_reg2, cand_mask2, cand_err2
-                else:
-                    LOG.debug("alt_stage2_affine ok=0 (skipped/failed)")
-
-            # (C) B-spline residual after lens+affine
-            if ok_lens:
-                fixed_nr2_2d = fixed_mask.any(axis=0).astype(np.float32)
-                moving_nr2_2d = alt_mask.any(axis=0).astype(np.float32)
-
-                tx_nr2, ok_nr2 = _try_sitk_bspline_2d(
-                    fixed_nr2_2d,
-                    moving_nr2_2d,
-                    mesh_size=tuple(map(int, smooth_bspline_mesh_size)),
-                    n_iter=int(smooth_bspline_iters),
-                )
-                if ok_nr2:
-                    cand_reg3 = _apply_sitk_tx_slicewise(alt_reg, tx_nr2, sitk.sitkLinear)
-
-                    cand_mask3 = np.zeros_like(alt_mask, dtype=bool)
-                    for z in range(alt_mask.shape[0]):
-                        cand_mask3[z] = (
-                            _sitk_resample_2d(alt_mask[z].astype(np.float32), tx_nr2, sitk.sitkNearestNeighbor) > 0.5
-                        )
-
-                    cand_err3 = float(_dice_error_from_masks(fixed_mask, cand_mask3))
-                    LOG.debug("alt_stage4_bspline candidate global_err=%.4f", cand_err3)
-                    alt_reg, alt_mask, alt_err = cand_reg3, cand_mask3, cand_err3
-                else:
-                    LOG.debug("alt_stage4_bspline ok=0 (skipped/failed)")
-
-            # Final accept of alternate branch (global Dice only)
-            if float(alt_err) <= float(pre_aff_err):
-                current_reg = alt_reg
-                current_mask = alt_mask
-                current_err = float(alt_err)
-                alt_refine_taken = True
-                LOG.debug("alt_branch accepted global_err=%.4f (baseline=%.4f)", float(current_err), pre_aff_err)
-            else:
-                LOG.debug("alt_branch rejected alt_err=%.4f > baseline=%.4f", float(alt_err), pre_aff_err)
-
+        _maybe_accept("stage2_affine", cand_reg, cand_mask, cand_err)
     else:
         LOG.debug("stage2_affine ok=0 (skipped/failed)")
 
-    if not alt_refine_taken:
-        # -------------------------
-        # Stage 3 — Lens warp
-        # -------------------------
-        lens_reg, lens_mask, ok_lens = _try_lens_warp(
-            fixed_mask=fixed_mask,
-            moving_reg=current_reg,
-            moving_mask=current_mask,
-            match_max_dist=150.0,
-            lens_center_search_px=150,
-            lens_center_step_px=3,
-        )
-        if ok_lens:
-            cand_reg = lens_reg.astype(np.float32, copy=False)
-            cand_mask = lens_mask.astype(bool, copy=False)
-            cand_err = _dice_error_from_masks(fixed_mask, cand_mask)
-            _maybe_accept("stage3_lens", cand_reg, cand_mask, cand_err)
-        else:
-            LOG.debug("stage3_lens ok=0 (skipped/failed)")
-
-    if not alt_refine_taken:
-        # -------------------------
-        # Stage 4 — B-spline
-        # -------------------------
-        fixed_nr_2d = fixed_mask.any(axis=0).astype(np.float32)
-        moving_nr_2d = current_mask.any(axis=0).astype(np.float32)
-
-        tx_nr, ok_nr = _try_sitk_bspline_2d(
-            fixed_nr_2d,
-            moving_nr_2d,
-            mesh_size=tuple(map(int, smooth_bspline_mesh_size)),
-            n_iter=int(smooth_bspline_iters),
-        )
-        if ok_nr:
-            import SimpleITK as sitk
-
-            cand_reg = _apply_sitk_tx_slicewise(current_reg, tx_nr, sitk.sitkLinear)
-
-            cand_mask = np.zeros_like(current_mask, dtype=bool)
-            for z in range(current_mask.shape[0]):
-                cand_mask[z] = (
-                    _sitk_resample_2d(current_mask[z].astype(np.float32), tx_nr, sitk.sitkNearestNeighbor) > 0.5
-                )
-
-            cand_err = _dice_error_from_masks(fixed_mask, cand_mask)
-            _maybe_accept("stage4_bspline", cand_reg, cand_mask, cand_err)
-        else:
-            LOG.debug("stage4_bspline ok=0 (skipped/failed)")
+    # -------------------------
+    # Stage 3 — Lens warp (ALWAYS-APPLY if it runs)
+    # -------------------------
+    lens_reg, lens_mask, ok_lens = _try_lens_warp(
+        fixed_mask=fixed_mask,
+        moving_reg=current_reg,
+        moving_mask=current_mask,
+        match_max_dist=150.0,
+        lens_center_search_px=150,
+        lens_center_step_px=3,
+    )
+    if ok_lens:
+        cand_reg = lens_reg.astype(np.float32, copy=False)
+        cand_mask = lens_mask.astype(bool, copy=False)
+        cand_err = _dice_error_from_masks(fixed_mask, cand_mask)
+        _maybe_accept("stage3_lens", cand_reg, cand_mask, cand_err)
+    else:
+        LOG.debug("stage3_lens ok=0 (skipped/failed)")
 
     # -------------------------
-    # Finalize + return (ALWAYS)
+    # Stage 4 — B-spline (ALWAYS-APPLY if it runs)
     # -------------------------
+    fixed_nr_2d = fixed_mask.any(axis=0).astype(np.float32)
+    moving_nr_2d = current_mask.any(axis=0).astype(np.float32)
+
+    tx_nr, ok_nr = _try_sitk_bspline_2d(
+        fixed_nr_2d,
+        moving_nr_2d,
+        mesh_size=tuple(map(int, smooth_bspline_mesh_size)),
+        n_iter=int(smooth_bspline_iters),
+    )
+    if ok_nr:
+        import SimpleITK as sitk
+
+        cand_reg = _apply_sitk_tx_slicewise(current_reg, tx_nr, sitk.sitkLinear)
+
+        cand_mask = np.zeros_like(current_mask, dtype=bool)
+        for z in range(current_mask.shape[0]):
+            cand_mask[z] = (
+                _sitk_resample_2d(current_mask[z].astype(np.float32), tx_nr, sitk.sitkNearestNeighbor) > 0.5
+            )
+
+        cand_err = _dice_error_from_masks(fixed_mask, cand_mask)
+        _maybe_accept("stage4_bspline", cand_reg, cand_mask, cand_err)
+    else:
+        LOG.debug("stage4_bspline ok=0 (skipped/failed)")
+
     out = _cast_like_input(current_reg.astype(np.float32, copy=False), orig_dtype)
     LOG.info(
         "done stage=final rigid_shift=(%.2f,%.2f,%.2f) error=%.4f",
@@ -580,7 +476,7 @@ def register_3d_stack(
         float(current_shift[1]),
         float(current_shift[2]),
         float(current_err),
-        )
+    )
     return out, current_shift.copy(), float(current_err)
 
 

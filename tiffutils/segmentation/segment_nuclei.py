@@ -86,7 +86,7 @@ def segment_nuclei_cpsam_3d(
     # Robust normalization to [0,1]
     # ------------------------------------------------------------------
     if normalize:
-        vmin = np.percentile(img_zyx, 1)
+        vmin = np.percentile(img_zyx, 0)
         vmax = np.percentile(img_zyx, 99)
         if vmax > vmin:
             img_zyx = (img_zyx - vmin) / (vmax - vmin)
@@ -371,9 +371,10 @@ def crop_and_save_nuclei_from_mask(
         save_tiff(crop_raw, raw_out_path)
 
         # Optional mask save: <base>_nXX_mask.tiff
+        # Typically the first round nuclei mask is saved, which corresponds to iteration 1 (i01), channel 0 (ch01)
         mask_out_path: Path | None = None
         if mask_output_dir is not None:
-            mask_out_path = mask_output_dir / f"{base_with_n}.tiff"
+            mask_out_path = mask_output_dir / f"{base_with_n}i01ch0_nucleus.tiff"
             save_tiff(crop_mask, mask_out_path)
 
         saved_paths.append((raw_out_path, mask_out_path))
