@@ -36,6 +36,7 @@ from ._api import (
     stack_single_file,
     segmentMetaphaseChromosomes,
     segmentChromosomeTerritories,
+    segmentSpeckles
 )
 
 __all__ = [
@@ -62,6 +63,7 @@ __all__ = [
     "stack_single_file",
     "segmentMetaphaseChromosomes",
     "segmentChromosomeTerritories",
+    "segmentSpeckles",
     "DEFAULT_FMT",
     "DEFAULT_DATEFMT",
     "get_logger",

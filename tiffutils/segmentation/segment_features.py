@@ -219,3 +219,76 @@ def segmentChromosomeTerritories(
         LOG.info("segmentChromosomeTerritories done fg_voxels=%s time_s=%.3f", n_fg, t.s())
 
     return out
+
+
+def segmentSpeckles(
+    array_zyx: np.ndarray,
+    intensity_scaling_param: list[float] | tuple[float, ...] = (1, 12.5),
+    gaussian_smoothing_sigma: float = 1.0,
+    s2_param: list[list[float]] | tuple[tuple[float, float], ...] = ((4, 0.10), (2.5, 0.10), (1, 0.02)),
+    apply_intensity_normalization: bool = True,
+    *,
+    verbose: bool = False,
+) -> np.ndarray:
+    """Segment speckle-like dots from a 3D fluorescence image (Z,Y,X).
+
+    Runs dot detection slice-by-slice (2D) and returns a binary mask in the
+    *same dtype* as the input: background=0, foreground=max(dtype) (or 1.0 for floats).
+    """
+    t = Timer()
+
+    try:
+        from aicssegmentation.core.pre_processing_utils import (
+            intensity_normalization,
+            image_smoothing_gaussian_3d,
+        )
+    except ImportError as e:
+        raise ImportError(
+            "segmentSpeckles() requires `aicssegmentation` (for preprocessing utilities). "
+            "Install it in the environment where you run it."
+        ) from e
+
+    if array_zyx.ndim != 3:
+        raise ValueError(f"array_zyx must be 3D (Z,Y,X); got shape={array_zyx.shape}")
+
+    orig_dtype = array_zyx.dtype
+
+    if verbose:
+        LOG.info(
+            "segmentSpeckles start shape=%s dtype=%s sigma=%s apply_norm=%s s2_param=%s",
+            array_zyx.shape,
+            orig_dtype,
+            gaussian_smoothing_sigma,
+            apply_intensity_normalization,
+            s2_param,
+        )
+
+    img = array_zyx.astype(np.float32, copy=False)
+
+    if apply_intensity_normalization:
+        img = intensity_normalization(img, scaling_param=intensity_scaling_param)
+
+    img_smooth = image_smoothing_gaussian_3d(img, sigma=gaussian_smoothing_sigma)
+
+    # Dot detection (slice-by-slice 2D wrapper)
+    bw_spot = dot_2d_slice_by_slice_wrapper(img_smooth, s2_param)
+
+    # Ensure boolean mask
+    bw_spot = bw_spot > 0
+
+    # Convert boolean mask to same dtype as input
+    if np.issubdtype(orig_dtype, np.integer):
+        fg_val = np.iinfo(orig_dtype).max
+    elif np.issubdtype(orig_dtype, np.floating):
+        fg_val = np.array(1.0, dtype=orig_dtype)
+    else:
+        fg_val = 1
+
+    out = np.zeros_like(array_zyx, dtype=orig_dtype)
+    out[bw_spot] = fg_val
+
+    if verbose:
+        n_fg = int(np.count_nonzero(out))
+        LOG.info("segmentSpeckles done fg_voxels=%s time_s=%.3f", n_fg, t.s())
+
+    return out

@@ -99,3 +99,7 @@ def segmentMetaphaseChromosomes(*args: Any, **kwargs: Any):
 def segmentChromosomeTerritories(*args: Any, **kwargs: Any):
     from .segmentation.segment_features import segmentChromosomeTerritories as f
     return f(*args, **kwargs)
+
+def segmentSpeckles(*args: Any, **kwargs: Any):
+    from .segmentation.segment_features import segmentSpeckles as f
+    return f(*args, **kwargs)
