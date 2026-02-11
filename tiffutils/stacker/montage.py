@@ -22,7 +22,13 @@ def create_3D_montage(
     margin_right=40,
     overlay_alpha: float = 0.5,
     add_labels: bool = True,
-    channel_labels: list[str] | None = None,   # NEW
+    channel_labels: list[str] | None = None,
+    draw_nucleus_outline: bool = True,
+    # Optional override: pass a dedicated nucleus mask (ZYX). If None, use mask channel 0.
+    nuc_mask: np.ndarray | None = None,        # expected shape (Z, Y, X)
+    nuc_linestyle: str = "--",                 # "--" dashed, ":" dotted, "-." dashdot
+    nuc_linewidth: float = 2.0,
+    nuc_color: str = "white",
 ):
     """
     Create an RGB square montage from a 3D or 4D volume, adding side and bottom projections.
@@ -63,6 +69,35 @@ def create_3D_montage(
                 f"must match number of channels ({C})"
             )
 
+    # --- Nucleus mask source for dashed contour overlay ---
+    # If draw_nucleus_outline is ON:
+    #   - if nuc_mask is provided, use it (must be ZYX)
+    #   - else, use the FIRST CHANNEL of the provided mask (channel 0) as the nucleus mask
+    nuc_xy = nuc_xz = nuc_yz = None  # defined only if we will draw nucleus outline
+
+    if draw_nucleus_outline:
+        if nuc_mask is not None:
+            nuc_mask_zyx = np.asarray(nuc_mask)
+            if nuc_mask_zyx.ndim != 3:
+                raise ValueError(f"nuc_mask must be 3D ZYX, got shape {nuc_mask_zyx.shape}")
+            if nuc_mask_zyx.shape != (Z, Y, X):
+                raise ValueError(
+                    f"nuc_mask shape must match (Z,Y,X)={(Z,Y,X)}, got {nuc_mask_zyx.shape}"
+                )
+        else:
+            # Default: use the same nucleus mask used in the first image (channel 0)
+            if mask_zcyx is None:
+                raise RuntimeError("Internal error: mask_zcyx not defined")
+            nuc_mask_zyx = mask_zcyx[:, 0, :, :]  # Z,Y,X
+
+        # Ensure binary
+        nuc_mask_zyx = (nuc_mask_zyx > 0).astype(np.uint8)
+
+        # Projections as binary arrays, matching montage orientations
+        nuc_xy = (np.max(nuc_mask_zyx, axis=0) > 0).astype(np.uint8)      # (Y, X)
+        nuc_xz = (np.max(nuc_mask_zyx, axis=1) > 0).astype(np.uint8)      # (Z, X)
+        nuc_yz = ((np.max(nuc_mask_zyx, axis=2) > 0).T).astype(np.uint8)  # (Y, Z)
+        
     # --- Projections ---
     vol_xy  = np.empty((C, Y, X), dtype=vol_zcyx.dtype)
     vol_xz  = np.empty((C, Z, X), dtype=vol_zcyx.dtype)
@@ -156,6 +191,36 @@ def create_3D_montage(
     )
     ax.imshow(montage_rgb, interpolation='none')
     ax.axis("off")
+
+    # --- Dashed nucleus contour overlay (drawn AFTER imshow => on top of channel-specific outlines) ---
+    if draw_nucleus_outline and (nuc_xy is not None):
+        def draw_contour(binary_2d: np.ndarray, x0: int, y0: int):
+            # Define pixel coordinate grid so contour lands in the right montage location
+            yy = np.arange(binary_2d.shape[0]) + y0
+            xx = np.arange(binary_2d.shape[1]) + x0
+            ax.contour(
+                xx, yy, binary_2d,
+                levels=[0.5],
+                colors=[nuc_color],
+                linewidths=nuc_linewidth,
+                linestyles=nuc_linestyle,
+                antialiased=True,
+                zorder=10,  # force on top
+            )
+
+        for i in range(C):
+            r = i // cols
+            c = i % cols
+
+            y_start = margin_top + effective_label_space + r * (panel_height + spacer * 2 + row_spacer)
+            x_start = margin_left + c * (panel_width + spacer * 2)
+
+            # XY region
+            draw_contour(nuc_xy, x_start + 0, y_start + 0)
+            # YZ region (your "bottom" panel to the right of XY)
+            draw_contour(nuc_yz, x_start + (X + spacer), y_start + 0)
+            # XZ region (your "side" panel below XY)
+            draw_contour(nuc_xz, x_start + 0, y_start + (Y + spacer))
 
     if add_labels:
         for x, y, i in label_positions:

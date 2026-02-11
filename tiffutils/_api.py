@@ -37,6 +37,14 @@ def histogram_stretch(*args: Any, **kwargs: Any):
     from .processing.modify_histogram import histogram_stretch as f
     return f(*args, **kwargs)
 
+def rolling_ball_background_correct(*args: Any, **kwargs: Any):
+    from .processing.modify_histogram import rolling_ball_background_correct as f
+    return f(*args, **kwargs)
+
+def top_hat_background_correct(*args: Any, **kwargs: Any):
+    from .processing.modify_histogram import top_hat_background_correct as f
+    return f(*args, **kwargs)
+
 def mip(*args: Any, **kwargs: Any):
     from .stacker.projection import mip as f
     return f(*args, **kwargs)
@@ -102,4 +110,8 @@ def segmentChromosomeTerritories(*args: Any, **kwargs: Any):
 
 def segmentSpeckles(*args: Any, **kwargs: Any):
     from .segmentation.segment_features import segmentSpeckles as f
+    return f(*args, **kwargs)
+
+def segmentTelomeres(*args: Any, **kwargs: Any):
+    from .segmentation.segment_features import segmentTelomeres as f
     return f(*args, **kwargs)

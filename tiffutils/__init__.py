@@ -21,6 +21,8 @@ from ._api import (
     resample_z_to_match_xy,
     convert_dtype,
     histogram_stretch,
+    rolling_ball_background_correct,
+    top_hat_background_correct,
     apply_edges,
     overlay_arrays,
     mip,
@@ -36,7 +38,8 @@ from ._api import (
     stack_single_file,
     segmentMetaphaseChromosomes,
     segmentChromosomeTerritories,
-    segmentSpeckles
+    segmentSpeckles,
+    segmentTelomeres
 )
 
 __all__ = [
@@ -49,6 +52,8 @@ __all__ = [
     "resample_z_to_match_xy",
     "convert_dtype",
     "histogram_stretch",
+    "rolling_ball_background_correct",
+    "top_hat_background_correct",
     "apply_edges",
     "overlay_arrays",
     "mip",
@@ -64,6 +69,7 @@ __all__ = [
     "segmentMetaphaseChromosomes",
     "segmentChromosomeTerritories",
     "segmentSpeckles",
+    "segmentTelomeres",
     "DEFAULT_FMT",
     "DEFAULT_DATEFMT",
     "get_logger",

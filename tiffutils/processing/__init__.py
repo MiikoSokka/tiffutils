@@ -2,7 +2,7 @@
 
 # Always-safe imports (no heavy dependencies)
 from .dtype import convert_dtype
-from .modify_histogram import histogram_stretch
+from .modify_histogram import histogram_stretch, rolling_ball_background_correct, top_hat_background_correct
 from .resample import resample_z_to_match_xy
 
 # Optional helper: make stubs for optional functions

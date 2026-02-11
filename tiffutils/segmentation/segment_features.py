@@ -81,66 +81,70 @@ def segmentMetaphaseChromosomes(
 
 def segmentChromosomeTerritories(
     array_zyx: np.ndarray,
-    intensity_scaling_param: list[float] | tuple[float, ...] = [0.8, 8.5, 300, 650],
+    intensity_scaling_param: list[float] | tuple[float, ...] = (0.8, 8.5, 300, 650),
     gaussian_smoothing_sigma: float = 0.7,
     s2_param_bright=None,
     s2_param_dark=None,
-    threshold: str = "tri",
+    threshold: str | float = "tri",
     min_area: int = 700,
     apply_intensity_normalization: bool = True,
     relative_max_intensity_threshold: float = 0.35,
     *,
+    # --- watershed / splitting (conservative) ---
+    do_watershed: bool = True,
+    ws_min_distance: int = 10,                  # voxels (peak_local_max)
+    ws_threshold_abs: float = 2.0,              # in "distance units" (µm if ws_sampling in µm)
+    ws_exclude_border: bool = False,
+    ws_compactness: float = 0.0,
+    ws_sampling: tuple[float, float, float] | None = (0.500039, 0.94917, 0.94917),  # (z,y,x) µm
+    ws_dist_smooth_sigma_um: float = 1.0,       # smooth EDT in µm to suppress tiny maxima
+    ws_max_seeds_per_component: int = 2,        # cap seeds per CC (you expect ~2 CTs)
+    # --- post-processing of labels ---
+    min_region_voxels: int = 0,                 # drop tiny labels after watershed
+    relmax_filter_stage: str = "post",          # "pre", "post", or "both"
+    relabel_sequential: bool = True,
+    # --- misc ---
+    binary_min_size: int = 1000,                # binary cleanup before watershed
+    binary_connectivity: int = 1,               # 1=6-connected in 3D
     verbose: bool = False,
 ) -> np.ndarray:
-    """Segment chromosome territories from a 3D fluorescence image.
+    """Segment chromosome territories from a 3D fluorescence image, returning integer labels (int32).
 
-    Uses AICS-segmentation Masked-Object (MO) thresholding and an object-level
-    relative max-intensity filter to suppress faint "ghost" segmentations.
+    Background = 0; territories = 1..N.
 
-    Parameters
-    ----------
-    array_zyx : np.ndarray
-        3D input image with shape (Z, Y, X).
-    intensity_scaling_param : tuple or list, optional
-        Parameters passed to `intensity_normalization` when
-        `apply_intensity_normalization` is True.
-    gaussian_smoothing_sigma : float, optional
-        Standard deviation for Gaussian smoothing in voxels.
-    s2_param_bright, s2_param_dark
-        Kept for API compatibility (currently not used).
-    threshold : str or float, optional
-        Global thresholding method passed to `MO`.
-    min_area : int, optional
-        Minimum object size (in voxels) for MO thresholding.
-    apply_intensity_normalization : bool, optional
-        If True, apply `intensity_normalization` before smoothing.
-    relative_max_intensity_threshold : float, optional
-        Keep only components with max intensity >= this fraction of the brightest
-        component's max intensity.
-    verbose : bool, optional
-        If True, emit INFO-level progress logs.
-
-    Returns
-    -------
-    np.ndarray
-        A 3D array of the same shape and dtype as `array_zyx`.
-        Background voxels are 0; foreground voxels are set to the max value of
-        the input dtype.
+    Notes
+    -----
+    - Uses MO thresholding to create a foreground mask.
+    - Optional watershed split is *conservative*:
+      at most `ws_max_seeds_per_component` seeds per connected component.
+    - Uses SciPy Gaussian filter for smoothing (avoids version-dependent AICS helper behavior).
     """
-    t = Timer()
+    import time
+    import logging
+    import numpy as np
+
+    class _Timer:
+        def __init__(self):
+            self._t0 = time.time()
+
+        def s(self) -> float:
+            return time.time() - self._t0
+
+    t = _Timer()
+    LOG_ = globals().get("LOG", logging.getLogger(__name__))
 
     try:
         from aicssegmentation.core.MO_threshold import MO
-        from aicssegmentation.core.pre_processing_utils import (
-            intensity_normalization,
-            image_smoothing_gaussian_3d,
-        )
-        from skimage.morphology import remove_small_objects
+        from aicssegmentation.core.pre_processing_utils import intensity_normalization
+        from scipy import ndimage as ndi
         from skimage.measure import label, regionprops
+        from skimage.morphology import remove_small_objects
+        from skimage.feature import peak_local_max
+        from skimage.segmentation import watershed
+        from skimage.segmentation import relabel_sequential as _relabel_sequential
     except ImportError as e:
         raise ImportError(
-            "segmentChromosomeTerritories() requires `aicssegmentation` and `scikit-image`. "
-            "Install them in the environment where you run it."
+            "segmentChromosomeTerritories() requires `aicssegmentation`, `scikit-image`, and `scipy`."
         ) from e
 
     if array_zyx.ndim != 3:
@@ -149,33 +153,51 @@ def segmentChromosomeTerritories(
     if not (0.0 <= float(relative_max_intensity_threshold) <= 1.0):
         raise ValueError("relative_max_intensity_threshold must be between 0 and 1 (inclusive).")
 
+    if relmax_filter_stage not in {"pre", "post", "both"}:
+        raise ValueError('relmax_filter_stage must be one of {"pre","post","both"}.')
+
+    if ws_min_distance < 1:
+        raise ValueError("ws_min_distance must be >= 1")
+
+    if ws_max_seeds_per_component < 1:
+        raise ValueError("ws_max_seeds_per_component must be >= 1")
+
     # Defaults for dot filters (kept for API compatibility)
     if s2_param_bright is None:
         s2_param_bright = [[2, 0.025]]
     if s2_param_dark is None:
         s2_param_dark = [[2, 0.025], [1, 0.025]]
 
-    orig_dtype = array_zyx.dtype
-
     if verbose:
-        LOG.info(
-            "segmentChromosomeTerritories start shape=%s dtype=%s threshold=%s min_area=%s sigma=%s apply_norm=%s relmax_thr=%s",
+        LOG_.info(
+            "segmentChromosomeTerritories start shape=%s dtype=%s threshold=%s min_area=%s "
+            "sigma=%s apply_norm=%s do_watershed=%s ws_min_distance=%s ws_thr_abs=%s "
+            "ws_sampling=%s ws_dist_smooth_sigma_um=%s ws_max_seeds_per_component=%s",
             array_zyx.shape,
-            orig_dtype,
+            array_zyx.dtype,
             threshold,
             min_area,
             gaussian_smoothing_sigma,
             apply_intensity_normalization,
-            relative_max_intensity_threshold,
+            do_watershed,
+            ws_min_distance,
+            ws_threshold_abs,
+            ws_sampling,
+            ws_dist_smooth_sigma_um,
+            ws_max_seeds_per_component,
         )
 
+    # float32 working image
     img = array_zyx.astype(np.float32, copy=False)
 
     if apply_intensity_normalization:
-        img = intensity_normalization(img, scaling_param=intensity_scaling_param)
+        img = intensity_normalization(img, scaling_param=list(intensity_scaling_param))
 
-    img_smooth = image_smoothing_gaussian_3d(img, sigma=gaussian_smoothing_sigma)
+    # ---- robust smoothing (SciPy) ----
+    # gaussian_smoothing_sigma is in voxels; if you want it in µm later, we can add that too.
+    img_smooth = ndi.gaussian_filter(img, sigma=float(gaussian_smoothing_sigma))
 
+    # ---- MO thresholding ----
     bw_mo, _ = MO(
         img_smooth,
         global_thresh_method=threshold,
@@ -183,42 +205,125 @@ def segmentChromosomeTerritories(
         return_object=True,
     )
 
-    bw_merge = bw_mo
+    # ---- Binary cleanup ----
+    bw_merge = (bw_mo > 0)
+    bw_merge = remove_small_objects(
+        bw_merge,
+        max_size=int(binary_min_size),
+    )
 
-    # Remove small objects (binary)
-    bw_merge = remove_small_objects(bw_merge > 0, min_size=1000, connectivity=0)
+    def _apply_relmax_filter_on_labels(lbl: np.ndarray, intensity: np.ndarray) -> np.ndarray:
+        """Keep labels whose max intensity >= relmax_thr * best_max; background stays 0."""
+        if lbl.max() == 0:
+            return lbl
 
-    # Object-level intensity filter using relative max intensity
-    lab = label(bw_merge)
-    if lab.max() > 0:
-        props = regionprops(lab, intensity_image=img_smooth)
+        props = regionprops(lbl, intensity_image=intensity)
+        if not props:
+            return lbl * 0
+
         max_ints = np.array([p.max_intensity for p in props], dtype=np.float32)
-        best = float(max_ints.max())
-        if best > 0:
-            rel = max_ints / (best + 1e-8)
-            keep_labels = [
-                props[i].label
-                for i in range(len(props))
-                if rel[i] >= relative_max_intensity_threshold
-            ]
-            bw_merge = np.isin(lab, keep_labels)
+        best = float(max_ints.max()) if max_ints.size else 0.0
+        if best <= 0:
+            return lbl * 0
 
-    # Convert boolean mask to same dtype as input
-    if np.issubdtype(orig_dtype, np.integer):
-        fg_val = np.iinfo(orig_dtype).max
-    elif np.issubdtype(orig_dtype, np.floating):
-        fg_val = np.array(1.0, dtype=orig_dtype)
+        rel = max_ints / (best + 1e-8)
+        keep = {props[i].label for i in range(len(props)) if rel[i] >= relative_max_intensity_threshold}
+        if not keep:
+            return lbl * 0
+
+        out_lbl = lbl.copy()
+        out_lbl[~np.isin(out_lbl, list(keep))] = 0
+        return out_lbl
+
+    # Optional relmax filtering on connected components BEFORE watershed
+    if relmax_filter_stage in {"pre", "both"}:
+        cc = label(bw_merge).astype(np.int32, copy=False)
+        cc = _apply_relmax_filter_on_labels(cc, img_smooth).astype(np.int32, copy=False)
+        bw_merge = cc > 0
+
+    # ---- Watershed splitting (integer labels) ----
+    if do_watershed and np.any(bw_merge):
+        cc = label(bw_merge).astype(np.int32, copy=False)
+
+        # distance in µm if ws_sampling is in µm
+        dist = ndi.distance_transform_edt(bw_merge, sampling=ws_sampling)
+
+        # smooth EDT in µm to reduce spurious maxima
+        if ws_dist_smooth_sigma_um and ws_dist_smooth_sigma_um > 0:
+            if ws_sampling is None:
+                sigma_zyx = (float(ws_dist_smooth_sigma_um),) * 3
+            else:
+                sigma_zyx = tuple(float(ws_dist_smooth_sigma_um) / float(s) for s in ws_sampling)
+            dist = ndi.gaussian_filter(dist, sigma=sigma_zyx)
+
+        coords = peak_local_max(
+            dist,
+            labels=bw_merge.astype(np.uint8),
+            min_distance=int(ws_min_distance),
+            threshold_abs=float(ws_threshold_abs),
+            exclude_border=bool(ws_exclude_border),
+        )
+
+        if coords.size == 0:
+            lbl = cc
+        else:
+            markers = np.zeros_like(cc, dtype=np.int32)
+
+            peak_cc = cc[tuple(coords.T)]
+            peak_strength = dist[tuple(coords.T)]
+
+            next_id = 1
+            for comp_id in np.unique(peak_cc):
+                if comp_id == 0:
+                    continue
+                idx = np.where(peak_cc == comp_id)[0]
+                if idx.size == 0:
+                    continue
+
+                k = min(int(ws_max_seeds_per_component), idx.size)
+                best_idx = idx[np.argsort(peak_strength[idx])[::-1][:k]]
+
+                for j in best_idx:
+                    z, y, x = coords[j]
+                    markers[z, y, x] = next_id
+                    next_id += 1
+
+            if markers.max() == 0:
+                lbl = cc
+            else:
+                lbl = watershed(
+                    -dist,
+                    markers,
+                    mask=bw_merge,
+                    compactness=float(ws_compactness) if ws_compactness else 0.0,
+                ).astype(np.int32, copy=False)
     else:
-        fg_val = 1
+        lbl = label(bw_merge).astype(np.int32, copy=False)
 
-    out = np.zeros_like(array_zyx, dtype=orig_dtype)
-    out[bw_merge] = fg_val
+    # Drop tiny labeled regions
+    if min_region_voxels and min_region_voxels > 0 and lbl.max() > 0:
+        counts = np.bincount(lbl.ravel())
+        small = np.where(counts < int(min_region_voxels))[0]
+        small = small[(small != 0)]
+        if small.size:
+            lbl[np.isin(lbl, small)] = 0
+
+    # Optional relmax filtering on watershed regions (recommended)
+    if relmax_filter_stage in {"post", "both"}:
+        lbl = _apply_relmax_filter_on_labels(lbl, img_smooth).astype(np.int32, copy=False)
+
+    if relabel_sequential and lbl.max() > 0:
+        lbl, _, _ = _relabel_sequential(lbl)
 
     if verbose:
-        n_fg = int(np.count_nonzero(out))
-        LOG.info("segmentChromosomeTerritories done fg_voxels=%s time_s=%.3f", n_fg, t.s())
+        LOG_.info(
+            "segmentChromosomeTerritories done n_labels=%d fg_voxels=%d time_s=%.3f",
+            int(lbl.max()),
+            int(np.count_nonzero(lbl)),
+            t.s(),
+        )
 
-    return out
+    return lbl.astype(np.int32, copy=False)
 
 
 def segmentSpeckles(
@@ -238,10 +343,12 @@ def segmentSpeckles(
     t = Timer()
 
     try:
-        from aicssegmentation.core.pre_processing_utils import (
-            intensity_normalization,
-            image_smoothing_gaussian_3d,
-        )
+        from aicssegmentation.core.vessel import filament_2d_wrapper
+        from aicssegmentation.core.seg_dot import dot_2d_slice_by_slice_wrapper
+        from aicssegmentation.core.utils import hole_filling
+        from aicssegmentation.core.pre_processing_utils import intensity_normalization, image_smoothing_gaussian_slice_by_slice, image_smoothing_gaussian_3d
+        from skimage.morphology import remove_small_objects,  dilation, erosion, ball  
+        from skimage.segmentation import watershed
     except ImportError as e:
         raise ImportError(
             "segmentSpeckles() requires `aicssegmentation` (for preprocessing utilities). "
@@ -290,5 +397,126 @@ def segmentSpeckles(
     if verbose:
         n_fg = int(np.count_nonzero(out))
         LOG.info("segmentSpeckles done fg_voxels=%s time_s=%.3f", n_fg, t.s())
+
+    return out
+
+
+def segmentTelomeres(
+    array_zyx: np.ndarray,
+    intensity_scaling_param: list[float] | tuple[float, ...] = [1.5, 27],
+    gaussian_smoothing_sigma: float = 1.0,
+    s2_param: list[list[float]] | tuple[tuple[float, float], ...] = [[1.5,0.06], [1,0.04]],
+    apply_intensity_normalization: bool = True,
+    min_region_max_intensity: float = 350.0,
+    *,
+    verbose: bool = False,
+) -> np.ndarray:
+    """Segment telomere-like dots from a 3D fluorescence image (Z,Y,X).
+
+    Baseline: same as `segmentSpeckles` (intensity normalization -> 3D Gaussian smoothing
+    -> dot detection slice-by-slice). Modification: applies an object-level filter so
+    only connected spot regions whose *maximum raw intensity* is >= `min_region_max_intensity`
+    are kept.
+
+    Returns a binary mask in the *same dtype* as the input: background=0,
+    foreground=max(dtype) (or 1.0 for floats).
+
+    Parameters
+    ----------
+    array_zyx : np.ndarray
+        3D input image with shape (Z, Y, X).
+    intensity_scaling_param : list[float] | tuple[float, ...]
+        Parameters passed to `intensity_normalization` when `apply_intensity_normalization` is True.
+    gaussian_smoothing_sigma : float
+        Sigma for 3D Gaussian smoothing (applied to the working float32 image).
+    s2_param : list[list[float]] | tuple[tuple[float, float], ...]
+        Parameters passed to AICS `dot_2d_slice_by_slice_wrapper`.
+    apply_intensity_normalization : bool
+        Whether to apply AICS `intensity_normalization` to the working image before detection.
+    min_region_max_intensity : float
+        Minimum *max intensity in the raw input image* required for a connected spot region
+        to be kept (telomeres are spots).
+    verbose : bool
+        If True, logs basic info (requires your existing `LOG` and `Timer`).
+
+    Returns
+    -------
+    np.ndarray
+        Binary mask in same dtype/shape as input.
+    """
+    t = Timer()
+
+    try:
+        from aicssegmentation.core.seg_dot import dot_2d_slice_by_slice_wrapper
+        from aicssegmentation.core.pre_processing_utils import (
+            intensity_normalization,
+            image_smoothing_gaussian_3d,
+        )
+        from skimage.measure import label, regionprops
+    except ImportError as e:
+        raise ImportError(
+            "segmentTelomeres() requires `aicssegmentation` and `scikit-image`."
+        ) from e
+
+    if array_zyx.ndim != 3:
+        raise ValueError(f"array_zyx must be 3D (Z,Y,X); got shape={array_zyx.shape}")
+
+    orig_dtype = array_zyx.dtype
+
+    if verbose:
+        LOG.info(
+            "segmentTelomeres start shape=%s dtype=%s sigma=%s apply_norm=%s s2_param=%s min_region_max_intensity=%s",
+            array_zyx.shape,
+            orig_dtype,
+            gaussian_smoothing_sigma,
+            apply_intensity_normalization,
+            s2_param,
+            min_region_max_intensity,
+        )
+
+    # --- preprocessing / detection (same baseline as segmentSpeckles) ---
+    img = array_zyx.astype(np.float32, copy=False)
+
+    if apply_intensity_normalization:
+        img = intensity_normalization(img, scaling_param=intensity_scaling_param)
+
+    img_smooth = image_smoothing_gaussian_3d(img, sigma=gaussian_smoothing_sigma)
+
+    bw_spot = dot_2d_slice_by_slice_wrapper(img_smooth, s2_param) > 0  # boolean
+
+    # --- object-level max-intensity filter on RAW image ---
+    # Use the original signal (not normalized) for thresholding.
+    raw_float = array_zyx.astype(np.float32, copy=False)
+
+    lab = label(bw_spot, connectivity=1)
+    if lab.max() > 0:
+        keep = np.zeros(lab.max() + 1, dtype=bool)  # index 0 unused (background)
+        # regionprops with intensity_image gives max_intensity per region
+        for rp in regionprops(lab, intensity_image=raw_float):
+            keep[rp.label] = (rp.max_intensity >= float(min_region_max_intensity))
+        bw_spot = keep[lab]  # vectorized remap labels->keep
+    else:
+        bw_spot = np.zeros_like(bw_spot, dtype=bool)
+
+    # --- convert boolean mask to same dtype as input ---
+    if np.issubdtype(orig_dtype, np.integer):
+        fg_val = np.iinfo(orig_dtype).max
+    elif np.issubdtype(orig_dtype, np.floating):
+        fg_val = np.array(1.0, dtype=orig_dtype)
+    else:
+        fg_val = 1
+
+    out = np.zeros_like(array_zyx, dtype=orig_dtype)
+    out[bw_spot] = fg_val
+
+    if verbose:
+        n_lbl = int(lab.max())
+        n_fg = int(np.count_nonzero(out))
+        LOG.info(
+            "segmentTelomeres done n_regions=%s fg_voxels=%s time_s=%.3f",
+            n_lbl,
+            n_fg,
+            t.s(),
+        )
 
     return out

@@ -1,11 +1,10 @@
 # coding: utf-8
 # Author: Miiko Sokka
 
-# from .._optional import optional_import
+from .._optional import optional_import
 import numpy as np
-import matplotlib.pyplot as plt
 
-def show_array(*arrays):
+def show_array(*arrays, size=4):
     """
     Display 1–4 2D NumPy arrays side by side.
 
@@ -14,6 +13,14 @@ def show_array(*arrays):
     *arrays : np.ndarray
         One to four 2D arrays of shape (Y, X)
     """
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as e:
+        raise ImportError(
+            "show_array() requires `matplotlib.pyplot`"
+            "Install it in the environment where you run it."
+            ) from e
+
     if not 1 <= len(arrays) <= 4:
         raise ValueError(f"Expected 1–4 arrays, got {len(arrays)}")
 
@@ -24,7 +31,7 @@ def show_array(*arrays):
             )
 
     n = len(arrays)
-    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4), squeeze=False)
+    fig, axes = plt.subplots(1, n, figsize=(size * n, size), squeeze=False)
 
     for ax, arr in zip(axes[0], arrays):
         im = ax.imshow(
