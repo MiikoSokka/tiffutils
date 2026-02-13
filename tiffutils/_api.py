@@ -80,6 +80,10 @@ def overlay_arrays(*args: Any, **kwargs: Any):
     from .segmentation.edges import overlay_arrays as f
     return f(*args, **kwargs)
 
+def centroids_from_mask_3d(*args: Any, **kwargs: Any):
+    from .processing.registration_centroids import centroids_from_mask_3d as f
+    return f(*args, **kwargs)
+
 def find_centroids(*args: Any, **kwargs: Any):
     from .processing.registration_centroids import find_centroids as f
     return f(*args, **kwargs)

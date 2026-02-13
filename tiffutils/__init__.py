@@ -31,6 +31,7 @@ from ._api import (
     reshape_channels_to_timepoints,
     create_3D_montage,
     # optional wrappers (safe because they're wrappers)
+    centroids_from_mask_3d,
     find_centroids,
     register_3d_stack,
     segment_nuclei_cpsam_3d,
@@ -61,6 +62,7 @@ __all__ = [
     "reshape_timepoints_to_channels",
     "reshape_channels_to_timepoints",
     "create_3D_montage",
+    "centroids_from_mask_3d",
     "find_centroids",
     "register_3d_stack",
     "segment_nuclei_cpsam_3d",

@@ -22,6 +22,67 @@ from ..io.logging_utils import get_logger, Timer
 LOG = get_logger(__name__)
 
 
+def centroids_from_mask_3d(
+    mask_zyx: np.ndarray,
+    *,
+    sphere_diameter: int | None = 6,
+    connectivity: int = 1,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Take a 3D *binary* mask and return:
+      - centroids_mask: boolean 3D mask with a small sphere drawn at each centroid
+      - centroids_3d: (N, 3) float array of (z, y, x) centroids
+
+    Parameters
+    ----------
+    mask_zyx : np.ndarray
+        3D mask (Z, Y, X). Nonzero voxels are treated as foreground.
+    sphere_diameter : int | None, optional
+        Diameter (voxels) of centroid spheres. If None or <=1, only the centroid voxels are True.
+    connectivity : int, optional
+        Connectivity for connected-component labeling. (1 is usually appropriate for 3D.)
+
+    Returns
+    -------
+    centroids_mask : np.ndarray (bool)
+        3D boolean mask (Z, Y, X) where True marks voxels inside centroid spheres.
+    centroids_3d : np.ndarray (float)
+        Array of centroids, shape (N, 3) with (z, y, x) coordinates.
+    """
+    if mask_zyx.ndim != 3:
+        raise ValueError(f"mask_zyx must be 3D (Z, Y, X). Got shape {mask_zyx.shape}")
+
+    bw = mask_zyx.astype(bool, copy=False)
+
+    if not np.any(bw):
+        return np.zeros_like(bw, dtype=bool), np.zeros((0, 3), dtype=float)
+
+    lbl = label(bw, connectivity=connectivity)
+    props = regionprops(lbl)
+
+    if not props:
+        return np.zeros_like(bw, dtype=bool), np.zeros((0, 3), dtype=float)
+
+    centroids_3d = np.asarray([p.centroid for p in props], dtype=float)
+
+    # place points at nearest voxel to each centroid
+    points = np.zeros_like(bw, dtype=bool)
+    zyx = np.rint(centroids_3d).astype(int)
+
+    Z, Y, X = bw.shape
+    for z, y, x in zyx:
+        if 0 <= z < Z and 0 <= y < Y and 0 <= x < X:
+            points[z, y, x] = True
+
+    if sphere_diameter is None or sphere_diameter <= 1:
+        return points, centroids_3d
+
+    radius = max(1, int(sphere_diameter) // 2)
+    centroids_mask = binary_dilation(points, footprint=ball(radius))
+
+    return centroids_mask, centroids_3d
+
+
 def find_centroids(
     array_3D,
     s3_param=[[1, 0.08]],

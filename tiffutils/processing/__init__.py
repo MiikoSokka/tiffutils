@@ -40,9 +40,15 @@ except ImportError as e:
 
 # registration_centroids.py — this is where aicssegmentation comes in
 try:
-    from .registration_centroids import find_centroids, register_3d_stack
+    from .registration_centroids import centroids_from_mask_3d, find_centroids, register_3d_stack
 except ImportError as e:
     _err = str(e)
+    centroids_from_mask_3d = _missing_dependency_stub(
+        "centroids_from_mask_3d() is unavailable because "
+        "tiffutils.processing.registration_centroids or one of its "
+        "optional dependencies (likely `aicssegmentation`) could not "
+        f"be imported. Original error: {_err}"
+    )
     find_centroids = _missing_dependency_stub(
         "find_centroids() is unavailable because "
         "tiffutils.processing.registration_centroids or one of its "
@@ -63,6 +69,7 @@ __all__ = [
     "register_arrays",
     "register_stacks_from_paths",
     "register_and_save_batch",
+    "centroids_from_mask_3d",
     "find_centroids",
     "register_3d_stack",
 ]
