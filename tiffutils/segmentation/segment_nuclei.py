@@ -228,7 +228,7 @@ def crop_and_save_nuclei_from_mask(
     raw_output_dir: str | Path,
     mask_output_dir: str | Path | None = None,
     margin_xy: int = 5,
-    margin_z: int = 1,
+    margin_z: int | None = 1,
     *,
     verbose: bool = False,
 ) -> list[tuple[Path, Path | None]]:
@@ -252,21 +252,15 @@ def crop_and_save_nuclei_from_mask(
         `<base>_nXX_mask.tiff`. If None, mask crops are not saved.
     margin_xy : int, optional
         Padding (in pixels) to add around the nucleus bounding box in X and Y.
-    margin_z : int, optional
+    margin_z : int or None, optional
         Padding (in slices) to add around the nucleus bounding box in Z.
+        If None, no Z cropping is performed (all Z slices are included).
 
     Returns
     -------
     list[tuple[Path, Path | None]]
         A list of (raw_path, mask_path) tuples for each saved nucleus.
         `mask_path` is None if `mask_output_dir` is None.
-
-    Notes
-    -----
-    - Nuclei whose bounding box touches the XY edges of the full volume
-      are skipped.
-    - Cropped masks are saved as binary uint8 arrays (0/1) if
-      `mask_output_dir` is provided.
     """
 
     t = Timer()
@@ -289,9 +283,7 @@ def crop_and_save_nuclei_from_mask(
 
     # --- Basic checks ---
     if mask_zyx.ndim != 3:
-        raise ValueError(
-            f"mask_zyx must have shape (Z, Y, X), got {mask_zyx.shape}"
-        )
+        raise ValueError(f"mask_zyx must have shape (Z, Y, X), got {mask_zyx.shape}")
 
     if raw.ndim == 3:
         # Allow ZYX raw, convert to ZCYX with C=1
@@ -339,18 +331,21 @@ def crop_and_save_nuclei_from_mask(
         z0_s, y0_s, x0_s, z1_s, y1_s, x1_s = p.bbox
 
         # Skip if nucleus touches XY boundaries (ignore Z boundaries)
-        touches_edge = (
-            y0_s == 0 or x0_s == 0 or
-            y1_s == Y or x1_s == X
-        )
+        touches_edge = (y0_s == 0 or x0_s == 0 or y1_s == Y or x1_s == X)
         if touches_edge:
             n_skipped_edge += 1
             continue
 
-        # Apply padding and clamp
-        z0 = max(0, z0_s - margin_z)
-        z1 = min(Z, z1_s + margin_z)
+        # --- Z crop logic ---
+        if margin_z is None:
+            z0, z1 = 0, Z
+        else:
+            if margin_z < 0:
+                raise ValueError(f"margin_z must be >= 0 or None, got {margin_z}")
+            z0 = max(0, z0_s - margin_z)
+            z1 = min(Z, z1_s + margin_z)
 
+        # Apply XY padding and clamp
         y0 = int(max(0, np.floor(y0_s - margin_xy)))
         y1 = int(min(Y, np.ceil(y1_s + margin_xy)))
 
@@ -371,7 +366,6 @@ def crop_and_save_nuclei_from_mask(
         save_tiff(crop_raw, raw_out_path)
 
         # Optional mask save: <base>_nXX_mask.tiff
-        # Typically the first round nuclei mask is saved, which corresponds to iteration 1 (i01), channel 0 (ch01)
         mask_out_path: Path | None = None
         if mask_output_dir is not None:
             mask_out_path = mask_output_dir / f"{base_with_n}i01ch0_nucleus.tiff"
