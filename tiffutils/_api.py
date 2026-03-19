@@ -92,8 +92,8 @@ def register_3d_stack(*args: Any, **kwargs: Any):
     from .processing.registration_centroids import register_3d_stack as f
     return f(*args, **kwargs)
 
-def segment_nuclei_cpsam_3d(*args: Any, **kwargs: Any):
-    from .segmentation.segment_nuclei import segment_nuclei_cpsam_3d as f
+def segment_nuclei_cpsam(*args: Any, **kwargs: Any):
+    from .segmentation.segment_nuclei import segment_nuclei_cpsam as f
     return f(*args, **kwargs)
 
 def crop_and_save_nuclei_from_mask(*args: Any, **kwargs: Any):

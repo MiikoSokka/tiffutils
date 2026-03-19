@@ -6,7 +6,7 @@ from .segment_features import segmentSpeckles
 from .segment_features import segmentTelomeres
 
 from .segment_nuclei import (
-    segment_nuclei_cpsam_3d,
+    segment_nuclei_cpsam,
     crop_and_save_nuclei_from_mask,
     stack_single_file,
 )
@@ -18,7 +18,7 @@ __all__ = [
     "segmentChromosomeTerritories",
     "segmentSpeckles",
     "segmentTelomeres",
-    "segment_nuclei_cpsam_3d",
+    "segment_nuclei_cpsam",
     "crop_and_save_nuclei_from_mask",
     "stack_single_file",
 ]

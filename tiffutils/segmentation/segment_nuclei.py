@@ -24,9 +24,10 @@ from ..io.logging_utils import get_logger, Timer
 
 LOG = get_logger(__name__)
 
-def segment_nuclei_cpsam_3d(
+def segment_nuclei_cpsam(
     vol: np.ndarray,
-    downsample_factor: int | None = 20,
+    input_layout: str = "auto",  # "auto", "yx", "cyx", "zyx", "zcyx"
+    downsample_factor: int | None = None,
     diameter: float | None = None,
     gpu: bool = True,
     anisotropy: float | None = None,
@@ -35,192 +36,187 @@ def segment_nuclei_cpsam_3d(
     normalize: bool = True,
     verbose: bool = False,
     flow3D_smooth: float | None = 1.6,
-    cellprob_threshold: float | None =2.0,
-    flow_threshold: float | None =0.4,
-    ) -> np.ndarray:
+    cellprob_threshold: float | None = 2.0,
+    flow_threshold: float | None = 0.4,
+) -> np.ndarray:
     """
-    Segment nuclei in a 3D volume using Cellpose-SAM (cpsam) with 3D mode.
+    Segment nuclei with Cellpose-SAM in 2D or 3D.
+
+    Parameters
+    ----------
+    vol : np.ndarray
+        Input image
+
+    input_layout : str
+        One of:
+            "auto"  : infer layout (fallback heuristic)
+            "yx"    : (Y, X)
+            "cyx"   : (C, Y, X)
+            "zyx"   : (Z, Y, X)
+            "zcyx"  : (Z, C, Y, X)
+
+    Returns
+    -------
+    np.ndarray
+        Labeled mask:
+            - (Y, X) for 2D
+            - (Z, Y, X) for 3D
     """
+    import numpy as np
+    from skimage.measure import block_reduce
+
     t = Timer()
 
-    if verbose:
-        LOG.info(
-            "segment_nuclei_cpsam_3d start shape=%s dtype=%s downsample_factor=%s diameter=%s gpu=%s anisotropy=%s min_size=%s normalize=%s",
-            getattr(vol, "shape", None),
-            getattr(vol, "dtype", None),
-            downsample_factor,
-            diameter,
-            gpu,
-            anisotropy,
-            min_size,
-            normalize,
-        )
-
-    # --- lazy import so that importing this module doesn't require cellpose ---
+    # -------------------------
+    # Load model
+    # -------------------------
     if model is None:
-        try:
-            from cellpose import models
-        except ImportError as e:
-            raise ImportError(
-                "segment_nuclei_cpsam_3d requires `cellpose` to be installed. "
-                "Install it in the environment where you run segmentation."
-            ) from e
-        if verbose:
-            LOG.info("step=creating cpsam model")
+        from cellpose import models
         model = models.CellposeModel(gpu=gpu)
 
-    # Handle input shape
-    if vol.ndim == 3:
-        # Z, Y, X
-        img_zyx = vol
-    elif vol.ndim == 4:
-        # Z, C, Y, X -> take first channel
-        img_zyx = vol[:, 0, ...]
-    else:
-        raise ValueError(f"Expected vol with ndim 3 or 4 (ZYX or ZCYX), got shape {vol.shape}")
-
-    # Ensure we have a copy in float32
-    img_zyx = np.asarray(img_zyx, dtype=np.float32)
-
-    # ------------------------------------------------------------------
-    # Robust normalization to [0,1]
-    # ------------------------------------------------------------------
-    if normalize:
-        vmin = np.percentile(img_zyx, 0)
-        vmax = np.percentile(img_zyx, 99)
-        if vmax > vmin:
-            img_zyx = (img_zyx - vmin) / (vmax - vmin)
-            img_zyx = np.clip(img_zyx, 0.0, 1.0)
+    # -------------------------
+    # Interpret layout
+    # -------------------------
+    if input_layout == "auto":
+        if vol.ndim == 2:
+            layout = "yx"
+        elif vol.ndim == 3:
+            layout = "cyx" if vol.shape[0] <= 4 else "zyx"
+        elif vol.ndim == 4:
+            layout = "zcyx"
         else:
-            # fallback: simple [0,1] scaling with safety checks
-            img_zyx = img_zyx - np.min(img_zyx)
-            if img_zyx.size > 0:
-                max_val = float(np.max(img_zyx))
-            else:
-                max_val = 0.0
-            if max_val > 0.0:
-                img_zyx = img_zyx / max_val
+            raise ValueError(f"Unsupported shape {vol.shape}")
+    else:
+        layout = input_layout.lower()
 
-    Z, Y, X = img_zyx.shape
     if verbose:
-        LOG.info("normalized shape=%s dtype=%s", img_zyx.shape, img_zyx.dtype)
+        LOG.info("input shape=%s layout=%s", vol.shape, layout)
 
-    # ----------------------------------------------------------------------
-    # Downsampling configuration
-    # ----------------------------------------------------------------------
-    do_downsample = downsample_factor is not None and downsample_factor > 1
-    scale_xy = float(downsample_factor) if do_downsample else 1.0
+    # -------------------------
+    # Convert to working image
+    # -------------------------
+    if layout == "yx":
+        img = vol
+        mode = "2d"
 
-    if do_downsample:
-        if verbose:
-            LOG.info(
-                "downsampling XY by factor %s", downsample_factor
-                )
-        img_ds = block_reduce(
-            img_zyx,
-            block_size=(1, downsample_factor, downsample_factor),
-            func=np.mean,
-        )
+    elif layout == "cyx":
+        img = vol[0]
+        mode = "2d"
+
+    elif layout == "zyx":
+        img = vol
+        mode = "3d"
+
+    elif layout == "zcyx":
+        img = vol[:, 0, ...]
+        mode = "3d"
+
     else:
-        img_ds = img_zyx
-        if verbose:
-            LOG.info("downsample disabled — using full resolution.")
+        raise ValueError(f"Invalid input_layout: {input_layout}")
 
-    # ----------------------------------------------------------------------
-    # Rescale diameter, anisotropy, and min_size to match the working image
-    # (we assume the inputs are specified in *full-resolution* units)
-    # ----------------------------------------------------------------------
-    if diameter is not None:
-        diameter_eff = diameter / scale_xy
-    else:
-        diameter_eff = None
+    img = np.asarray(img, dtype=np.float32)
 
-    if anisotropy is not None:
-        # anisotropy_full = z_spacing / xy_pixel_size
-        # after XY downsample by d: anisotropy_new = anisotropy_full / d
-        anisotropy_eff = anisotropy / scale_xy
+    # -------------------------
+    # Normalize
+    # -------------------------
+    if normalize:
+        vmin = np.percentile(img, 0)
+        vmax = np.percentile(img, 99)
+        if vmax > vmin:
+            img = (img - vmin) / (vmax - vmin)
+            img = np.clip(img, 0, 1)
+        else:
+            img = img - img.min()
+            maxv = img.max()
+            if maxv > 0:
+                img /= maxv
+
+    # -------------------------
+    # Downsample
+    # -------------------------
+    do_ds = downsample_factor is not None and downsample_factor > 1
+    scale = float(downsample_factor) if do_ds else 1.0
+
+    if mode == "2d":
+        Y, X = img.shape
+        if do_ds:
+            img_ds = block_reduce(img, (downsample_factor, downsample_factor), np.mean)
+        else:
+            img_ds = img
+
     else:
-        anisotropy_eff = None
+        Z, Y, X = img.shape
+        if do_ds:
+            img_ds = block_reduce(img, (1, downsample_factor, downsample_factor), np.mean)
+        else:
+            img_ds = img
+
+    # -------------------------
+    # Rescale parameters
+    # -------------------------
+    diameter_eff = diameter / scale if diameter is not None else None
 
     if min_size > 0:
-        if do_downsample:
-            # volume shrinks ~d^2 in XY (Z unchanged)
-            min_size_eff = int(round(min_size / (scale_xy ** 2)))
-            if min_size_eff < 1:
-                min_size_eff = 1
-        else:
-            min_size_eff = min_size
+        min_size_eff = int(round(min_size / (scale ** 2))) if do_ds else min_size
+        min_size_eff = max(min_size_eff, 1)
     else:
         min_size_eff = 0
 
-    if verbose:
-        LOG.info("effective parameters: diameter (full-res)=%s diameter (working)=%s anisotropy (full-res)=%s anisotropy (working)=%s min_size (full-res)=%s min_size (working)=%s",
-            diameter,
-            diameter_eff,
-            anisotropy,
-            anisotropy_eff,
-            min_size,
-            min_size_eff,)
+    if mode == "3d":
+        anisotropy_eff = anisotropy / scale if anisotropy is not None else None
+    else:
+        anisotropy_eff = None
 
-    if diameter_eff is not None and diameter_eff < 3 and verbose:
-        LOG.warning(
-            "effective diameter < 3 pixels at working scale. Cellpose performance may be poor; consider smaller downsample_factor or larger diameter."
-        )
-
-    # ----------------------------------------------------------------------
-    # Run Cellpose-SAM 3D
-    # ----------------------------------------------------------------------
-    if verbose:
-        LOG.info("running cellpose 3D-sam")
-
-    masks_ds, flows, styles = model.eval(
-        img_ds,
+    # -------------------------
+    # Run Cellpose
+    # -------------------------
+    common_kwargs = dict(
         diameter=diameter_eff,
-        do_3D=True,
-        anisotropy=anisotropy_eff,
         min_size=min_size_eff,
-        flow3D_smooth=flow3D_smooth,
         cellprob_threshold=cellprob_threshold,
         flow_threshold=flow_threshold,
         normalize=normalize,
         batch_size=1,
-        channel_axis=None,  # no separate channel dimension
-        z_axis=0,           # Z is axis 0 in img_ds
+        channel_axis=None,
     )
+
+    if mode == "2d":
+        masks_ds, *_ = model.eval(
+            img_ds,
+            do_3D=False,
+            **common_kwargs,
+        )
+    else:
+        masks_ds, *_ = model.eval(
+            img_ds,
+            do_3D=True,
+            anisotropy=anisotropy_eff,
+            flow3D_smooth=flow3D_smooth,
+            z_axis=0,
+            **common_kwargs,
+        )
 
     masks_ds = np.asarray(masks_ds)
 
-    # Upsample only if downsampling was applied
-    if do_downsample:
-        Y_ds, X_ds = masks_ds.shape[1:]
-        masks_up = np.repeat(
-            np.repeat(masks_ds, downsample_factor, axis=1),
-            downsample_factor,
-            axis=2,
-        )
-        masks_zyx = masks_up[:, :Y, :X]
+    # -------------------------
+    # Upsample
+    # -------------------------
+    if do_ds:
+        if mode == "2d":
+            masks = np.repeat(np.repeat(masks_ds, downsample_factor, 0), downsample_factor, 1)
+            masks = masks[:Y, :X]
+        else:
+            masks = np.repeat(np.repeat(masks_ds, downsample_factor, 1), downsample_factor, 2)
+            masks = masks[:, :Y, :X]
     else:
-        masks_zyx = masks_ds
+        masks = masks_ds
 
-    masks_zyx = masks_zyx.astype(np.int32, copy=False)
-
-    if verbose:
-        LOG.info("output masks shape %s, dtype %s", masks_zyx.shape, masks_zyx.dtype)
+    masks = masks.astype(np.int32, copy=False)
 
     if verbose:
-        # This is a labeled mask, so count labels rather than voxels.
-        n_labels = int(masks_zyx.max())
-        LOG.info("segment_nuclei_cpsam_3d done n_labels=%s time_s=%.3f", n_labels, t.s())
+        LOG.info("output shape=%s labels=%d time=%.2fs", masks.shape, int(masks.max()), t.s())
 
-    return masks_zyx
-
-
-from pathlib import Path
-import numpy as np
-from skimage.measure import regionprops
-import tifffile as tiff  # new
-
-# from .io import save_tiff   # or whatever your local import is
+    return masks
 
 def crop_and_save_nuclei_from_mask(
     mask_path: str | Path,
