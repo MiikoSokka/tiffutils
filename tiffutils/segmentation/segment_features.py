@@ -90,22 +90,10 @@ def segmentChromosomeTerritories(
     apply_intensity_normalization: bool = True,
     relative_max_intensity_threshold: float = 0.35,
     *,
-    # --- watershed / splitting (conservative) ---
-    do_watershed: bool = True,
-    ws_min_distance: int = 10,                  # voxels (peak_local_max)
-    ws_threshold_abs: float = 2.0,              # in "distance units" (µm if ws_sampling in µm)
-    ws_exclude_border: bool = False,
-    ws_compactness: float = 0.0,
-    ws_sampling: tuple[float, float, float] | None = (0.500039, 0.94917, 0.94917),  # (z,y,x) µm
-    ws_dist_smooth_sigma_um: float = 1.0,       # smooth EDT in µm to suppress tiny maxima
-    ws_max_seeds_per_component: int = 2,        # cap seeds per CC (you expect ~2 CTs)
-    # --- post-processing of labels ---
-    min_region_voxels: int = 0,                 # drop tiny labels after watershed
-    relmax_filter_stage: str = "post",          # "pre", "post", or "both"
+    min_region_voxels: int = 0,
+    relmax_filter_stage: str = "post",   # "pre", "post", or "both"
     relabel_sequential: bool = True,
-    # --- misc ---
-    binary_min_size: int = 1000,                # binary cleanup before watershed
-    binary_connectivity: int = 1,               # 1=6-connected in 3D
+    binary_min_size: int = 1000,
     verbose: bool = False,
 ) -> np.ndarray:
     """Segment chromosome territories from a 3D fluorescence image, returning integer labels (int32).
@@ -115,9 +103,8 @@ def segmentChromosomeTerritories(
     Notes
     -----
     - Uses MO thresholding to create a foreground mask.
-    - Optional watershed split is *conservative*:
-      at most `ws_max_seeds_per_component` seeds per connected component.
-    - Uses SciPy Gaussian filter for smoothing (avoids version-dependent AICS helper behavior).
+    - Uses SciPy Gaussian filter for smoothing.
+    - Connected components are used directly as territory labels.
     """
     import time
     import logging
@@ -139,8 +126,6 @@ def segmentChromosomeTerritories(
         from scipy import ndimage as ndi
         from skimage.measure import label, regionprops
         from skimage.morphology import remove_small_objects
-        from skimage.feature import peak_local_max
-        from skimage.segmentation import watershed
         from skimage.segmentation import relabel_sequential as _relabel_sequential
     except ImportError as e:
         raise ImportError(
@@ -156,12 +141,6 @@ def segmentChromosomeTerritories(
     if relmax_filter_stage not in {"pre", "post", "both"}:
         raise ValueError('relmax_filter_stage must be one of {"pre","post","both"}.')
 
-    if ws_min_distance < 1:
-        raise ValueError("ws_min_distance must be >= 1")
-
-    if ws_max_seeds_per_component < 1:
-        raise ValueError("ws_max_seeds_per_component must be >= 1")
-
     # Defaults for dot filters (kept for API compatibility)
     if s2_param_bright is None:
         s2_param_bright = [[2, 0.025]]
@@ -171,20 +150,15 @@ def segmentChromosomeTerritories(
     if verbose:
         LOG_.info(
             "segmentChromosomeTerritories start shape=%s dtype=%s threshold=%s min_area=%s "
-            "sigma=%s apply_norm=%s do_watershed=%s ws_min_distance=%s ws_thr_abs=%s "
-            "ws_sampling=%s ws_dist_smooth_sigma_um=%s ws_max_seeds_per_component=%s",
+            "sigma=%s apply_norm=%s relmax_filter_stage=%s binary_min_size=%s",
             array_zyx.shape,
             array_zyx.dtype,
             threshold,
             min_area,
             gaussian_smoothing_sigma,
             apply_intensity_normalization,
-            do_watershed,
-            ws_min_distance,
-            ws_threshold_abs,
-            ws_sampling,
-            ws_dist_smooth_sigma_um,
-            ws_max_seeds_per_component,
+            relmax_filter_stage,
+            binary_min_size,
         )
 
     # float32 working image
@@ -193,8 +167,7 @@ def segmentChromosomeTerritories(
     if apply_intensity_normalization:
         img = intensity_normalization(img, scaling_param=list(intensity_scaling_param))
 
-    # ---- robust smoothing (SciPy) ----
-    # gaussian_smoothing_sigma is in voxels; if you want it in µm later, we can add that too.
+    # ---- smoothing ----
     img_smooth = ndi.gaussian_filter(img, sigma=float(gaussian_smoothing_sigma))
 
     # ---- MO thresholding ----
@@ -209,7 +182,7 @@ def segmentChromosomeTerritories(
     bw_merge = (bw_mo > 0)
     bw_merge = remove_small_objects(
         bw_merge,
-        max_size=int(binary_min_size),
+        min_size=int(binary_min_size),
     )
 
     def _apply_relmax_filter_on_labels(lbl: np.ndarray, intensity: np.ndarray) -> np.ndarray:
@@ -235,70 +208,14 @@ def segmentChromosomeTerritories(
         out_lbl[~np.isin(out_lbl, list(keep))] = 0
         return out_lbl
 
-    # Optional relmax filtering on connected components BEFORE watershed
+    # Optional relmax filtering before final labeling
     if relmax_filter_stage in {"pre", "both"}:
         cc = label(bw_merge).astype(np.int32, copy=False)
         cc = _apply_relmax_filter_on_labels(cc, img_smooth).astype(np.int32, copy=False)
         bw_merge = cc > 0
 
-    # ---- Watershed splitting (integer labels) ----
-    if do_watershed and np.any(bw_merge):
-        cc = label(bw_merge).astype(np.int32, copy=False)
-
-        # distance in µm if ws_sampling is in µm
-        dist = ndi.distance_transform_edt(bw_merge, sampling=ws_sampling)
-
-        # smooth EDT in µm to reduce spurious maxima
-        if ws_dist_smooth_sigma_um and ws_dist_smooth_sigma_um > 0:
-            if ws_sampling is None:
-                sigma_zyx = (float(ws_dist_smooth_sigma_um),) * 3
-            else:
-                sigma_zyx = tuple(float(ws_dist_smooth_sigma_um) / float(s) for s in ws_sampling)
-            dist = ndi.gaussian_filter(dist, sigma=sigma_zyx)
-
-        coords = peak_local_max(
-            dist,
-            labels=bw_merge.astype(np.uint8),
-            min_distance=int(ws_min_distance),
-            threshold_abs=float(ws_threshold_abs),
-            exclude_border=bool(ws_exclude_border),
-        )
-
-        if coords.size == 0:
-            lbl = cc
-        else:
-            markers = np.zeros_like(cc, dtype=np.int32)
-
-            peak_cc = cc[tuple(coords.T)]
-            peak_strength = dist[tuple(coords.T)]
-
-            next_id = 1
-            for comp_id in np.unique(peak_cc):
-                if comp_id == 0:
-                    continue
-                idx = np.where(peak_cc == comp_id)[0]
-                if idx.size == 0:
-                    continue
-
-                k = min(int(ws_max_seeds_per_component), idx.size)
-                best_idx = idx[np.argsort(peak_strength[idx])[::-1][:k]]
-
-                for j in best_idx:
-                    z, y, x = coords[j]
-                    markers[z, y, x] = next_id
-                    next_id += 1
-
-            if markers.max() == 0:
-                lbl = cc
-            else:
-                lbl = watershed(
-                    -dist,
-                    markers,
-                    mask=bw_merge,
-                    compactness=float(ws_compactness) if ws_compactness else 0.0,
-                ).astype(np.int32, copy=False)
-    else:
-        lbl = label(bw_merge).astype(np.int32, copy=False)
+    # ---- Connected-component labeling only ----
+    lbl = label(bw_merge).astype(np.int32, copy=False)
 
     # Drop tiny labeled regions
     if min_region_voxels and min_region_voxels > 0 and lbl.max() > 0:
@@ -308,7 +225,7 @@ def segmentChromosomeTerritories(
         if small.size:
             lbl[np.isin(lbl, small)] = 0
 
-    # Optional relmax filtering on watershed regions (recommended)
+    # Optional relmax filtering on final regions
     if relmax_filter_stage in {"post", "both"}:
         lbl = _apply_relmax_filter_on_labels(lbl, img_smooth).astype(np.int32, copy=False)
 
