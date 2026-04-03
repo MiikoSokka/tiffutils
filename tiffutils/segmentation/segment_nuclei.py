@@ -14,6 +14,7 @@ import csv
 import re
 from typing import List, Tuple, Any
 import numpy as np
+import tifffile as tiff
 from ..io import load_tiff, save_tiff
 from ..processing import histogram_stretch
 
