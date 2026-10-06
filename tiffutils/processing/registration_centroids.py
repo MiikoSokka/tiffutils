@@ -89,6 +89,7 @@ def find_centroids(
     minArea=20,
     sphere_diameter=6,
     gaussian_smoothing_sigma=1,
+    return_labels=False,
 ):
     """
     Full pipeline:
@@ -110,6 +111,8 @@ def find_centroids(
         Used to define the structuring element radius for dilation.
     gaussian_smoothing_sigma : float, optional
         Sigma for Gaussian smoothing (slice-by-slice).
+    return_labels : bool, optional
+        If True, also return the labeled segmentation of the spots (see below). Default False.
 
     Returns
     -------
@@ -117,6 +120,9 @@ def find_centroids(
         3D boolean mask (Z, Y, X) where True marks voxels inside centroid spheres.
     centroids_3d : np.ndarray
         Array of centroids, shape (N, 3) with (z, y, x) coordinates (float).
+    labeled_mask : np.ndarray (int), only if ``return_labels=True``
+        3D label image (Z, Y, X) of the segmented spots (after size filter and watershed split).
+        Label ``i + 1`` is the spot whose centroid is ``centroids_3d[i]``; 0 is background.
     """
     if array_3D.ndim != 3:
         raise ValueError(
@@ -168,6 +174,8 @@ def find_centroids(
         centroids_3d = np.zeros((0, 3), dtype=float)
         centroids_mask = np.zeros_like(mask, dtype=bool)
         LOG.info("done step=find_centroids n_centroids=0 time_s=%.3f", t.s())
+        if return_labels:
+            return centroids_mask, centroids_3d, np.zeros(mask.shape, dtype=np.int32)
         return centroids_mask, centroids_3d
 
     # ------------------------------------------------------------------
@@ -204,6 +212,8 @@ def find_centroids(
         centroids_3d = np.zeros((0, 3), dtype=float)
         centroids_mask = np.zeros_like(final_mask, dtype=bool)
         LOG.info("done step=find_centroids n_centroids=0 time_s=%.3f", t.s())
+        if return_labels:
+            return centroids_mask, centroids_3d, labeled_mask
         return centroids_mask, centroids_3d
 
     centroids_3d = np.array([p.centroid for p in props], dtype=float)
@@ -234,6 +244,8 @@ def find_centroids(
         t.s(),
     )
 
+    if return_labels:
+        return centroids_mask, centroids_3d, labeled_mask
     return centroids_mask, centroids_3d
 
 
