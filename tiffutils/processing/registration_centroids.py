@@ -15,6 +15,10 @@ from skimage.morphology import remove_small_objects, ball, binary_dilation, dila
 from skimage.segmentation import watershed
 from skimage.transform import warp
 
+import json
+import os
+from dataclasses import dataclass, field
+
 import numpy as np
 import tiffutils as tiffu
 from ..io.logging_utils import get_logger, Timer
@@ -269,6 +273,7 @@ def register_3d_stack(
     affine_iters: int = 200,
     smooth_bspline_mesh_size: tuple[int, int] = (8, 8),
     smooth_bspline_iters: int = 120,
+    return_transforms: bool = False,
     ):
 
     """
@@ -284,6 +289,11 @@ def register_3d_stack(
     registered : np.ndarray
     shift_vec : np.ndarray  (dz,dy,dx) rigid shift used as baseline before affine/lens/bspline
     error : float           FINAL FULL-volume Dice error (1-dice)
+    registration : Registration, only if ``return_transforms=True``
+        The accepted transform chain (rigid shift, then any accepted affine / lens /
+        B-spline stages, in application order) plus metadata. Re-apply it to a stack of
+        the same shape with ``apply_registration`` (bit-identical to ``registered``), or
+        persist it with ``save_registration``.
     """
     LOG.debug(
         "start step=register_3d_stack dice_threshold=%s crop=%s affine_iters=%s smooth_bspline_mesh_size=%s smooth_bspline_iters=%s",
@@ -303,6 +313,27 @@ def register_3d_stack(
         moving_mask = moving_centroids.astype(bool, copy=False)
 
     orig_dtype = moving_original.dtype
+
+    # Accepted transforms, in application order. Appended to in lockstep with every
+    # accepted update of ``current_reg`` below, so that ``_apply_chain`` on the original
+    # stack reproduces the returned registered stack exactly.
+    chain: list[dict] = []
+    reg_params = {
+        "dice_threshold": float(dice_threshold),
+        "crop": int(crop),
+        "affine_iters": int(affine_iters),
+        "smooth_bspline_mesh_size": [int(v) for v in smooth_bspline_mesh_size],
+        "smooth_bspline_iters": int(smooth_bspline_iters),
+    }
+
+    def _result(out_arr, shift_vec, err):
+        if not return_transforms:
+            return out_arr, shift_vec, float(err)
+        reg = Registration(
+            chain=[dict(rec) for rec in chain],
+            meta=_registration_meta(moving_original, shift_vec, err, reg_params, chain),
+        )
+        return out_arr, shift_vec, float(err), reg
 
     fixed_2d = fixed_mask.any(axis=0).astype(np.float32)
     moving_2d = moving_mask.any(axis=0).astype(np.float32)
@@ -366,7 +397,8 @@ def register_3d_stack(
         reg0 = _shift_full_volume(moving_original, shift0)
         out0 = _cast_like_input(reg0.astype(np.float32, copy=False), orig_dtype)
         LOG.info("done stage=stage0_pcc_full error=%.4f (stop: global<=thr)", float(err0))
-        return out0, shift0.copy(), float(err0)
+        chain.append(_rigid_record(shift0))
+        return _result(out0, shift0.copy(), float(err0))
 
     # -------------------------
     # Stage 1 / 1b — NCC: select BEST shift by CENTRAL Dice (absolute, from original moving)
@@ -462,6 +494,7 @@ def register_3d_stack(
     current_mask = _shift_mask(moving_mask, current_shift)
 
     current_err = _dice_error_from_masks(fixed_mask, current_mask)
+    chain.append(_rigid_record(current_shift))
     LOG.debug(
         "rigid_baseline stage=stage1_best_ncc_by_central box=%s ncc_score=%.4f central_err=%.4f global_err=%.4f shift=(%.2f,%.2f,%.2f)",
         str(best_ncc.get("box", crop_box0)),
@@ -501,6 +534,8 @@ def register_3d_stack(
 
         cand_err = _dice_error_from_masks(fixed_mask, cand_mask)
         aff_accepted = _maybe_accept("stage2_affine", cand_reg, cand_mask, cand_err)
+        if aff_accepted:
+            chain.append(_sitk_record(tx_aff))
 
         # ------------------------------------------------------------
         # Alternate branch only if affine was REJECTED by global Dice:
@@ -513,9 +548,10 @@ def register_3d_stack(
             alt_reg = pre_aff_reg
             alt_mask = pre_aff_mask
             alt_err = pre_aff_err
+            alt_chain = list(chain)  # rigid only (affine was rejected)
 
             # (A) Lens first
-            lens_reg, lens_mask, ok_lens = _try_lens_warp(
+            lens_reg, lens_mask, ok_lens, lens_params = _try_lens_warp(
                 fixed_mask=fixed_mask,
                 moving_reg=alt_reg,
                 moving_mask=alt_mask,
@@ -524,6 +560,7 @@ def register_3d_stack(
                 lens_center_step_px=3,
             )
             if ok_lens:
+                alt_chain.append(_lens_record(*lens_params))
                 alt_reg = lens_reg.astype(np.float32, copy=False)
                 alt_mask = lens_mask.astype(bool, copy=False)
                 alt_err = float(_dice_error_from_masks(fixed_mask, alt_mask))
@@ -551,6 +588,7 @@ def register_3d_stack(
 
                     cand_err2 = float(_dice_error_from_masks(fixed_mask, cand_mask2))
                     LOG.debug("alt_stage2_affine candidate global_err=%.4f (after lens=%.4f)", cand_err2, alt_err)
+                    alt_chain.append(_sitk_record(tx_aff2))
                     alt_reg, alt_mask, alt_err = cand_reg2, cand_mask2, cand_err2
                 else:
                     LOG.debug("alt_stage2_affine ok=0 (skipped/failed)")
@@ -577,6 +615,7 @@ def register_3d_stack(
 
                     cand_err3 = float(_dice_error_from_masks(fixed_mask, cand_mask3))
                     LOG.debug("alt_stage4_bspline candidate global_err=%.4f", cand_err3)
+                    alt_chain.append(_sitk_record(tx_nr2))
                     alt_reg, alt_mask, alt_err = cand_reg3, cand_mask3, cand_err3
                 else:
                     LOG.debug("alt_stage4_bspline ok=0 (skipped/failed)")
@@ -586,6 +625,7 @@ def register_3d_stack(
                 current_reg = alt_reg
                 current_mask = alt_mask
                 current_err = float(alt_err)
+                chain = alt_chain
                 alt_refine_taken = True
                 LOG.debug("alt_branch accepted global_err=%.4f (baseline=%.4f)", float(current_err), pre_aff_err)
             else:
@@ -598,7 +638,7 @@ def register_3d_stack(
         # -------------------------
         # Stage 3 — Lens warp
         # -------------------------
-        lens_reg, lens_mask, ok_lens = _try_lens_warp(
+        lens_reg, lens_mask, ok_lens, lens_params = _try_lens_warp(
             fixed_mask=fixed_mask,
             moving_reg=current_reg,
             moving_mask=current_mask,
@@ -610,7 +650,8 @@ def register_3d_stack(
             cand_reg = lens_reg.astype(np.float32, copy=False)
             cand_mask = lens_mask.astype(bool, copy=False)
             cand_err = _dice_error_from_masks(fixed_mask, cand_mask)
-            _maybe_accept("stage3_lens", cand_reg, cand_mask, cand_err)
+            if _maybe_accept("stage3_lens", cand_reg, cand_mask, cand_err):
+                chain.append(_lens_record(*lens_params))
         else:
             LOG.debug("stage3_lens ok=0 (skipped/failed)")
 
@@ -639,7 +680,8 @@ def register_3d_stack(
                 )
 
             cand_err = _dice_error_from_masks(fixed_mask, cand_mask)
-            _maybe_accept("stage4_bspline", cand_reg, cand_mask, cand_err)
+            if _maybe_accept("stage4_bspline", cand_reg, cand_mask, cand_err):
+                chain.append(_sitk_record(tx_nr))
         else:
             LOG.debug("stage4_bspline ok=0 (skipped/failed)")
 
@@ -654,7 +696,7 @@ def register_3d_stack(
         float(current_shift[2]),
         float(current_err),
         )
-    return out, current_shift.copy(), float(current_err)
+    return _result(out, current_shift.copy(), float(current_err))
 
 
 # -----------------------------------------------------------------------------
@@ -796,6 +838,8 @@ def _try_lens_warp(
     warped_reg : np.ndarray (float32)
     warped_mask : np.ndarray (bool)
     ok : bool
+    params : (cy, cx, k) or None
+        The fitted lens model; re-apply with ``_apply_lens``.
     """
     from scipy.spatial import cKDTree
     from scipy.ndimage import map_coordinates
@@ -812,7 +856,7 @@ def _try_lens_warp(
 
     if fixed_pts.shape[0] < 10 or moving_pts.shape[0] < 10:
         LOG.debug("lens_warp: insufficient beads fixed=%d moving=%d", int(fixed_pts.shape[0]), int(moving_pts.shape[0]))
-        return None, None, False
+        return None, None, False, None
 
     tree = cKDTree(moving_pts)
     dists, idx = tree.query(fixed_pts, distance_upper_bound=float(match_max_dist))
@@ -820,7 +864,7 @@ def _try_lens_warp(
     valid = np.isfinite(dists)
     if np.count_nonzero(valid) < 10:
         LOG.debug("lens_warp: insufficient matched beads (<=%d within %.1f px)", int(np.count_nonzero(valid)), float(match_max_dist))
-        return None, None, False
+        return None, None, False, None
 
     f = fixed_pts[valid]
     m = moving_pts[idx[valid]]
@@ -856,10 +900,30 @@ def _try_lens_warp(
 
     if best_params is None:
         LOG.debug("lens_warp: model fit failed")
-        return None, None, False
+        return None, None, False, None
 
     cy, cx, k = best_params
     LOG.debug("lens_warp fitted: center=(%.1f,%.1f) k=%.3e mse=%.4g matches=%d", cy, cx, k, best_err, int(np.count_nonzero(valid)))
+
+    warped_reg = _apply_lens(moving_reg, cy, cx, k, order=1)
+    warped_mask = _apply_lens(moving_mask.astype(np.float32, copy=False), cy, cx, k, order=0) > 0.5
+
+    return (
+        warped_reg.astype(np.float32, copy=False),
+        warped_mask.astype(bool, copy=False),
+        True,
+        (float(cy), float(cx), float(k)),
+    )
+
+
+def _apply_lens(vol: np.ndarray, cy: float, cx: float, k: float, order: int) -> np.ndarray:
+    """
+    Apply the radial lens model (centre cy,cx; strength k) slice-by-slice to a (Z,Y,X) or
+    (Z,C,Y,X) volume. Output is float32.
+    """
+    from scipy.ndimage import map_coordinates
+
+    h, w = vol.shape[-2:]
 
     yy, xx = np.meshgrid(
         np.arange(h, dtype=np.float32),
@@ -874,33 +938,27 @@ def _try_lens_warp(
     map_y = yy - dy
     map_x = xx - dx
 
-    def _warp_volume(vol, order):
-        out = np.empty_like(vol, dtype=np.float32)
-        if vol.ndim == 3:
-            for z in range(vol.shape[0]):
-                out[z] = map_coordinates(
-                    vol[z].astype(np.float32, copy=False),
+    out = np.empty_like(vol, dtype=np.float32)
+    if vol.ndim == 3:
+        for z in range(vol.shape[0]):
+            out[z] = map_coordinates(
+                vol[z].astype(np.float32, copy=False),
+                [map_y, map_x],
+                order=int(order),
+                mode="constant",
+                cval=0.0,
+            )
+    else:  # (Z,C,Y,X)
+        for z in range(vol.shape[0]):
+            for c in range(vol.shape[1]):
+                out[z, c] = map_coordinates(
+                    vol[z, c].astype(np.float32, copy=False),
                     [map_y, map_x],
                     order=int(order),
                     mode="constant",
                     cval=0.0,
                 )
-        else:  # (Z,C,Y,X)
-            for z in range(vol.shape[0]):
-                for c in range(vol.shape[1]):
-                    out[z, c] = map_coordinates(
-                        vol[z, c].astype(np.float32, copy=False),
-                        [map_y, map_x],
-                        order=int(order),
-                        mode="constant",
-                        cval=0.0,
-                    )
-        return out
-
-    warped_reg = _warp_volume(moving_reg, order=1)
-    warped_mask = _warp_volume(moving_mask.astype(np.float32, copy=False), order=0) > 0.5
-
-    return warped_reg.astype(np.float32, copy=False), warped_mask.astype(bool, copy=False), True
+    return out
 
 
 def _sitk_resample_2d(arr2d: np.ndarray, tx, interp):
@@ -1006,3 +1064,179 @@ def _try_sitk_bspline_2d(fixed_2d: np.ndarray, moving_2d: np.ndarray, mesh_size=
     except Exception as e:
         LOG.warning("B-spline registration failed: %s", str(e))
         return None, False
+
+# -----------------------------------------------------------------------------
+# Transform records, re-application and persistence
+#
+# ``register_3d_stack(..., return_transforms=True)`` returns a ``Registration``: the
+# accepted stages as plain JSON-able records, in application order. The same
+# ``_apply_chain`` code path is used for re-applying them, so a saved registration
+# reproduces the originally registered stack exactly.
+# -----------------------------------------------------------------------------
+
+REGISTRATION_SCHEMA = 1
+
+_SITK_RECORD_TYPES = {
+    "AffineTransform": "sitk_affine",
+    "BSplineTransform": "sitk_bspline",
+}
+
+
+def _tiffutils_version() -> str:
+    try:
+        from importlib.metadata import version
+
+        return str(version("tiffutils"))
+    except Exception:
+        return "unknown"
+
+
+def _rigid_record(shift_zyx) -> dict:
+    return {
+        "type": "rigid",
+        "shift_zyx": [float(v) for v in np.asarray(shift_zyx, dtype=np.float32)],
+    }
+
+
+def _lens_record(cy: float, cx: float, k: float) -> dict:
+    return {"type": "lens", "center_yx": [float(cy), float(cx)], "k": float(k)}
+
+
+def _sitk_record(tx) -> dict:
+    import SimpleITK as sitk
+
+    name = tx.GetName()
+    if name == "CompositeTransform":
+        # reg.Execute() wraps its result in a composite; keep the nesting and order.
+        return {
+            "type": "sitk_composite",
+            "dimension": int(tx.GetDimension()),
+            "transforms": [_sitk_record(tx.GetNthTransform(i)) for i in range(tx.GetNumberOfTransforms())],
+        }
+    if name not in _SITK_RECORD_TYPES:
+        raise ValueError(f"Cannot record SimpleITK transform of type {name!r}")
+    rec = {
+        "type": _SITK_RECORD_TYPES[name],
+        "dimension": int(tx.GetDimension()),
+        "parameters": [float(v) for v in tx.GetParameters()],
+        "fixed_parameters": [float(v) for v in tx.GetFixedParameters()],
+    }
+    if name == "BSplineTransform":
+        if not hasattr(tx, "GetOrder"):
+            tx = sitk.BSplineTransform(tx)  # downcast a generic Transform
+        rec["order"] = int(tx.GetOrder()) if hasattr(tx, "GetOrder") else 3
+    return rec
+
+
+def _record_to_sitk(rec: dict):
+    import SimpleITK as sitk
+
+    dim = int(rec["dimension"])
+    if rec["type"] == "sitk_composite":
+        comp = sitk.CompositeTransform(dim)
+        for sub in rec["transforms"]:
+            comp.AddTransform(_record_to_sitk(sub))
+        return comp
+    if rec["type"] == "sitk_affine":
+        tx = sitk.AffineTransform(dim)
+    elif rec["type"] == "sitk_bspline":
+        tx = sitk.BSplineTransform(dim, int(rec.get("order", 3)))
+    else:
+        raise ValueError(f"Not a SimpleITK record: {rec.get('type')!r}")
+    # Fixed parameters (grid/centre definition) must be set before the parameters.
+    tx.SetFixedParameters([float(v) for v in rec["fixed_parameters"]])
+    tx.SetParameters([float(v) for v in rec["parameters"]])
+    return tx
+
+
+def _apply_chain(vol: np.ndarray, chain: list[dict]) -> np.ndarray:
+    """
+    Apply a recorded transform chain to a (Z,Y,X) or (Z,C,Y,X) volume.
+    Returns float32 (cast back to the input dtype is done by the caller).
+    """
+    import SimpleITK as sitk
+
+    out = vol
+    for rec in chain:
+        kind = rec["type"]
+        if kind == "rigid":
+            out = _shift_full_volume(out, np.asarray(rec["shift_zyx"], dtype=np.float32))
+        elif kind in ("sitk_affine", "sitk_bspline", "sitk_composite"):
+            out = _apply_sitk_tx_slicewise(out, _record_to_sitk(rec), sitk.sitkLinear)
+        elif kind == "lens":
+            cy, cx = rec["center_yx"]
+            out = _apply_lens(out, cy, cx, rec["k"], order=1).astype(np.float32, copy=False)
+        else:
+            raise ValueError(f"Unknown transform record type: {kind!r}")
+    return out
+
+
+def _registration_meta(moving_original, shift_vec, err, reg_params, chain) -> dict:
+    return {
+        "tiffutils_version": _tiffutils_version(),
+        "input_shape": [int(v) for v in moving_original.shape],
+        "input_dtype": str(moving_original.dtype),
+        "dice_error": float(err),
+        "rigid_shift_zyx": [float(v) for v in np.asarray(shift_vec, dtype=np.float32)],
+        "stages": [rec["type"] for rec in chain],
+        "params": dict(reg_params),
+    }
+
+
+@dataclass
+class Registration:
+    """Accepted registration transforms (application order) plus metadata."""
+
+    chain: list = field(default_factory=list)
+    meta: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict:
+        return {"schema": REGISTRATION_SCHEMA, "chain": self.chain, "meta": self.meta}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Registration":
+        schema = d.get("schema")
+        if schema != REGISTRATION_SCHEMA:
+            raise ValueError(
+                f"Unsupported registration schema {schema!r} (this tiffutils reads {REGISTRATION_SCHEMA})"
+            )
+        return cls(chain=[dict(r) for r in d["chain"]], meta=dict(d.get("meta", {})))
+
+
+def apply_registration(moving_original: np.ndarray, registration) -> np.ndarray:
+    """
+    Re-apply a registration (``Registration`` or its ``to_dict()``) to a moving stack
+    ``(Z,C,Y,X)`` or ``(Z,Y,X)``. For the stack the registration was fitted on, the result
+    is identical to the ``registered`` array returned by ``register_3d_stack``.
+    """
+    reg = registration if isinstance(registration, Registration) else Registration.from_dict(registration)
+
+    recorded = reg.meta.get("input_shape")
+    if recorded is not None and list(moving_original.shape) != list(recorded):
+        raise ValueError(
+            f"Registration was fitted on shape {tuple(recorded)} but is applied to {tuple(moving_original.shape)}"
+        )
+
+    out = _apply_chain(moving_original, reg.chain)
+    return _cast_like_input(out.astype(np.float32, copy=False), moving_original.dtype)
+
+
+def registration_from_dict(d: dict) -> Registration:
+    return Registration.from_dict(d)
+
+
+def save_registration(registration: Registration, path) -> None:
+    """Write a registration as JSON (atomically: temp file, then rename)."""
+    from pathlib import Path
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp{os.getpid()}")
+    with open(tmp, "w") as f:
+        json.dump(registration.to_dict(), f, indent=1)
+    os.replace(tmp, path)
+
+
+def load_registration(path) -> Registration:
+    with open(path) as f:
+        return Registration.from_dict(json.load(f))

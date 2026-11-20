@@ -60,3 +60,20 @@ Install via pip (after structuring as a package):
 
 ```bash
 pip install .
+
+## Registration transforms (0.2.0)
+
+`register_3d_stack(..., return_transforms=True)` additionally returns a `Registration`: the accepted
+stages (rigid shift, then any accepted SimpleITK affine, lens warp and B-spline, in application order)
+as plain JSON-able records plus metadata.
+
+```python
+registered, shift, err, reg = tiffutils.register_3d_stack(fixed_mask, moving_mask, moving, return_transforms=True)
+tiffutils.save_registration(reg, "reg.json")          # atomic write
+reg = tiffutils.load_registration("reg.json")
+again = tiffutils.apply_registration(moving, reg)     # identical to `registered`
+```
+
+`apply_registration` uses the same code path as the fit, so it reproduces the registered stack exactly
+(shape must match the fitted stack). Without `return_transforms` the return value is unchanged.
+Tests: `python tests/test_registration_transforms.py`.

@@ -92,6 +92,22 @@ def register_3d_stack(*args: Any, **kwargs: Any):
     from .processing.registration_centroids import register_3d_stack as f
     return f(*args, **kwargs)
 
+def apply_registration(*args: Any, **kwargs: Any):
+    from .processing.registration_centroids import apply_registration as f
+    return f(*args, **kwargs)
+
+def save_registration(*args: Any, **kwargs: Any):
+    from .processing.registration_centroids import save_registration as f
+    return f(*args, **kwargs)
+
+def load_registration(*args: Any, **kwargs: Any):
+    from .processing.registration_centroids import load_registration as f
+    return f(*args, **kwargs)
+
+def registration_from_dict(*args: Any, **kwargs: Any):
+    from .processing.registration_centroids import registration_from_dict as f
+    return f(*args, **kwargs)
+
 def segment_nuclei_cpsam(*args: Any, **kwargs: Any):
     from .segmentation.segment_nuclei import segment_nuclei_cpsam as f
     return f(*args, **kwargs)
